@@ -61,6 +61,37 @@
     background: var(--panel); color: inherit;
   }
   .tag:hover { background: var(--accent-soft); }
+  /* The pager. A shelf of a thousand songs does not go on one page: a
+     thousand covers is a thousand pictures to fetch and lay out, and nobody
+     scrolls past the first fifty anyway. */
+  .pager {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    align-items: center; justify-content: center;
+    margin: 28px auto 8px; padding: 0 20px;
+  }
+  .pager button {
+    min-width: 34px; padding: 5px 10px; font: inherit; font-size: 13px;
+    cursor: pointer; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--panel); color: inherit;
+  }
+  .pager button:hover:not(:disabled) { background: var(--accent-soft); }
+  .pager button.on {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+  .pager button:disabled { opacity: .4; cursor: default; }
+  .pager .gap { color: var(--muted); padding: 0 2px; }
+  /* The instruments, as things to tick rather than press: a tag is a word
+     about a piece and an instrument is a thing you either play or do not. */
+  .pick {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 10px 3px 7px; font-size: 13px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 999px;
+    background: var(--panel);
+  }
+  .pick:hover { background: var(--accent-soft); }
+  .pick input { margin: 0; cursor: pointer; }
+  .pick.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .controls .label { color: var(--muted); font-size: 13px; margin-right: 2px; }
   .tag.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 
   .shelf {
@@ -106,8 +137,13 @@
   <input id="q" type="search" placeholder="Search titles, composers, words…" autocomplete="off">
   <span id="tags"></span>
 </div>
+<div class="controls" id="instrument-row" hidden>
+  <span class="label">Played by</span>
+  <span id="instruments"></span>
+</div>
 <div class="shelf" id="shelf"></div>
 <p class="none" id="none" hidden>Nothing matches.</p>
+<nav class="pager" id="pager" aria-label="Pages of the shelf"></nav>
 
 <script>
 // The shelf is built from scores.json, which build.sh writes. Keeping the
@@ -116,11 +152,23 @@
 const shelf = document.getElementById("shelf");
 const countEl = document.getElementById("count");
 const tagBar = document.getElementById("tags");
+const instBar = document.getElementById("instruments");
+const instRow = document.getElementById("instrument-row");
+const pager = document.getElementById("pager");
 const search = document.getElementById("q");
 const none = document.getElementById("none");
 
 let all = [];
 let picked = new Set();
+let played = new Set();
+
+// How many scores go on one page of the shelf.
+//
+// A shelf of a thousand songs cannot be one page: it is a thousand covers to
+// fetch and lay out, and nobody reaches the fiftieth. Sixty is a few screens
+// of browsing and about a megabyte of pictures, which a page can afford.
+const PER_PAGE = 60;
+let page = 0;
 
 const esc = (s) => String(s).replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -131,6 +179,13 @@ function matches(s) {
   for (const t of picked) {
     if (!(s.tags || []).some((x) => x.toLowerCase() === t)) return false;
   }
+  // And every picked instrument, by the same rule: ticking voice and piano
+  // asks for songs with a piano under them, not for everything with either.
+  // That is what "played by" says, and it is the useful question — a shelf
+  // can already be searched for one word.
+  for (const i of played) {
+    if (!(s.instruments || []).some((x) => x.toLowerCase() === i)) return false;
+  }
   const q = search.value.trim().toLowerCase();
   if (!q) return true;
   return [s.title, s.composer, s.description, ...(s.tags || [])]
@@ -139,7 +194,17 @@ function matches(s) {
 
 function draw() {
   const shown = all.filter(matches);
-  shelf.innerHTML = shown.map((s) => `
+
+  // Which page of them, and which scores are on it. The page is kept rather
+  // than reset, so paging back and forth does not keep throwing you to the
+  // front; narrowing the shelf past the page you are on brings you back to
+  // the last one there is.
+  const pages = Math.max(1, Math.ceil(shown.length / PER_PAGE));
+  if (page >= pages) page = pages - 1;
+  const from = page * PER_PAGE;
+  const here = shown.slice(from, from + PER_PAGE);
+
+  shelf.innerHTML = here.map((s) => `
     <div class="score">
       <a class="cover" href="${esc(s.slug)}/play.html">
         <img src="${esc(s.slug)}/cover.png" alt="The first page of ${esc(s.title)}" loading="lazy">
@@ -160,9 +225,88 @@ function draw() {
       </div>
     </div>`).join("");
   none.hidden = shown.length > 0;
-  countEl.textContent = shown.length === all.length
+  const total = shown.length === all.length
     ? `${all.length} score${all.length === 1 ? "" : "s"}`
     : `${shown.length} of ${all.length}`;
+  countEl.textContent = pages > 1
+    ? `${total} — showing ${from + 1}–${from + here.length}`
+    : total;
+  drawPager(pages);
+}
+
+// The pager: a step either way, the ends always reachable, and a few numbers
+// around where you are.
+//
+// Not every page as a button. A thousand songs is twenty-five pages and a
+// corpus three times that is seventy-five, and a row of seventy-five numbers
+// is not a thing anybody reads.
+function drawPager(pages) {
+  pager.innerHTML = "";
+  if (pages <= 1) return;
+
+  const go = (to, label, opts = {}) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    if (opts.on) b.className = "on";
+    if (opts.dead) b.disabled = true;
+    if (opts.on) b.setAttribute("aria-current", "page");
+    b.onclick = () => {
+      page = to;
+      draw();
+      // Back to the top: the shelf has been replaced under you, and reading
+      // the middle of a page you have not seen the start of is no use.
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    };
+    pager.appendChild(b);
+  };
+  const gap = () => {
+    const s = document.createElement("span");
+    s.className = "gap";
+    s.textContent = "…";
+    pager.appendChild(s);
+  };
+
+  go(page - 1, "‹ Back", { dead: page === 0 });
+  const want = new Set([0, pages - 1]);
+  for (let i = page - 2; i <= page + 2; i++) {
+    if (i >= 0 && i < pages) want.add(i);
+  }
+  let last = -1;
+  for (const i of [...want].sort((a, b) => a - b)) {
+    if (i - last > 1) gap();
+    go(i, String(i + 1), { on: i === page });
+    last = i;
+  }
+  go(page + 1, "Next ›", { dead: page === pages - 1 });
+}
+
+// The instruments anything on the shelf is played by, each once.
+function drawInstruments() {
+  const seen = new Map();
+  for (const s of all) {
+    for (const i of s.instruments || []) {
+      const key = i.toLowerCase();
+      if (!seen.has(key)) seen.set(key, i);
+    }
+  }
+  instBar.innerHTML = "";
+  instRow.hidden = seen.size === 0;
+  for (const [key, label] of [...seen].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const wrap = document.createElement("label");
+    wrap.className = "pick";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.onchange = () => {
+      if (box.checked) played.add(key); else played.delete(key);
+      wrap.classList.toggle("on", box.checked);
+      page = 0;
+      draw();
+    };
+    wrap.appendChild(box);
+    wrap.appendChild(document.createTextNode(label));
+    instBar.appendChild(wrap);
+  }
 }
 
 function drawTags() {
@@ -182,17 +326,20 @@ function drawTags() {
     b.onclick = () => {
       if (picked.has(key)) picked.delete(key); else picked.add(key);
       b.classList.toggle("on", picked.has(key));
+      // Narrowing the shelf starts it again from the front: page nine of
+      // what you were looking at before is nowhere in what you asked for.
+      page = 0;
       draw();
     };
     tagBar.appendChild(b);
   }
 }
 
-search.addEventListener("input", draw);
+search.addEventListener("input", () => { page = 0; draw(); });
 
 fetch("scores.json")
   .then((r) => r.json())
-  .then((rows) => { all = rows; drawTags(); draw(); })
+  .then((rows) => { all = rows; drawTags(); drawInstruments(); draw(); })
   .catch(() => {
     countEl.textContent = "scores.json is not here — run build.sh";
   });

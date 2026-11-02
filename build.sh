@@ -450,12 +450,18 @@ while IFS= read -r file <&3; do
 		-font "${up}font.otf" -script "${up}player.js" \
 		-audio "$audio" ${bands:+-bands "$bands"} "$file" >/dev/null
 
-	taglist=$(field tags | tr ',' '\n' | sed 's/^ *//; s/ *$//' |
-		grep -v '^$' | sed 's/"/\\"/g; s/.*/"&"/' | paste -sd, -)
-	row=$(printf '{"slug":"%s","file":"%s","folder":"%s","title":"%s","composer":"%s","description":"%s","pages":%s,"tags":[%s]}' \
+	# The tags and the instruments, each as a JSON list. Both are written by
+	# gscore as one comma-separated line, so both are cut up the same way.
+	aslist() {
+		field "$1" | tr ',' '\n' | sed 's/^ *//; s/ *$//' |
+			grep -v '^$' | sed 's/"/\\"/g; s/.*/"&"/' | paste -sd, -
+	}
+	taglist=$(aslist tags)
+	instlist=$(aslist instruments)
+	row=$(printf '{"slug":"%s","file":"%s","folder":"%s","title":"%s","composer":"%s","description":"%s","pages":%s,"tags":[%s],"instruments":[%s]}' \
 		"$(esc "$slug")" "$(esc "$name.gscore")" "$(esc "$dir")" \
 		"$(esc "$title")" "$(esc "$(field composer)")" \
-		"$(esc "$(field description)")" "${pages:-0}" "$taglist")
+		"$(esc "$(field description)")" "${pages:-0}" "$taglist" "$instlist")
 	printf '%s\n' "$row" >> "$OUT/.rows"
 
 	# Kept for the next build. The recording is not in here: it has a cache of

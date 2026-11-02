@@ -2,3 +2,12 @@
 /.audio-cache/
 /.openscore/
 /.build-cache/
+
+# Which gscore converted an imported folder, written by import-openscore.sh so
+# that a re-run after gscore changes converts again instead of finding
+# everything up to date and quietly doing nothing.
+#
+# A hash of the binary, so it is different on every machine and on every CI
+# runner: committed, it would conflict for ever and tell nobody anything. Not
+# under a folder of its own because an import can be dropped anywhere.
+.gscore-id

@@ -265,14 +265,36 @@ while IFS= read -r file <&3; do
 		fi
 	fi
 
+	# Whether the drawing goes in the page or beside it.
+	#
+	# A score the browser can hold goes in, which is one file and nothing to
+	# fetch. A large one cannot: Beethoven's ninth inline is seventy-four
+	# megabytes and nine hundred thousand shapes, and a browser given all of
+	# them spends seconds laying them out and then has nothing left to
+	# animate with — the music played with the page frozen behind it. In
+	# pieces of four systems it is about nine thousand shapes at a time and
+	# the page opens in a second.
+	#
+	# Decided from the size of the music rather than of the file, because a
+	# .gscore carries a PDF of itself and so says more about how many pages
+	# it is than how many shapes. Staves times bars is what the drawing costs.
+	staves=$(printf '%s\n' "$info" | grep -cE '^[^ ].*: .*measures,' || true)
+	measures=$(printf '%s\n' "$info" | sed -nE 's/.*: [a-z]+, ([0-9]+) measures.*/\1/p' | head -1)
+	shapes=$(( ${staves:-1} * ${measures:-1} ))
+	bands=""
+	if [ "$shapes" -gt 20000 ]; then
+		bands="4"
+		echo "    $staves staves x $measures bars: the drawing goes beside the page"
+	fi
+
 	# The playable page, with the font and the player left outside it.
 	#
 	# With a recording the page plays that; without one it synthesises, as
-	# it always did. -audio "" is the same as not passing it, so this is one
-	# call either way.
+	# it always did. An empty -audio or -bands is the same as not passing it,
+	# so this is one call however the answers came out.
 	"$GSCORE" -o "$OUT/$slug/play.html" \
 		-font "${up}font.otf" -script "${up}player.js" \
-		-audio "$audio" "$file" >/dev/null
+		-audio "$audio" ${bands:+-bands "$bands"} "$file" >/dev/null
 
 	taglist=$(field tags | tr ',' '\n' | sed 's/^ *//; s/ *$//' |
 		grep -v '^$' | sed 's/"/\\"/g; s/.*/"&"/' | paste -sd, -)

@@ -44,6 +44,9 @@ jobs:
         with:
           repository: stricaud/gscore
           path: .gscore-src
+      # Which gscore this is, for the cache key below.
+      - id: engraver
+        run: echo "sha=$(git -C .gscore-src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v5
         with:
           go-version-file: .gscore-src/go.mod
@@ -81,6 +84,27 @@ jobs:
           key: audio-${{ hashFiles('**/*.gscore') }}
           restore-keys: |
             audio-
+
+      # The engraved pages, kept between builds.
+      #
+      # Every score is engraved three times to publish it — once to read what
+      # it says, once for the cover, once for the page — and a shelf of a
+      # thousand imported songs is minutes of that on every build, for music
+      # that has not changed. build.sh keeps the results under .build-cache
+      # and this carries them from one run to the next.
+      #
+      # The gscore revision is in the key as well as the scores, because a
+      # page drawn by last week's engraver is not the page this week's would
+      # draw. Nothing stale can be served even so: build.sh keys each entry on
+      # a hash of the gscore binary itself, so a cache restored against the
+      # wrong engraver simply misses rather than being believed. The key is
+      # the optimisation; the check inside is the guarantee.
+      - uses: actions/cache@v4
+        with:
+          path: .build-cache
+          key: pages-${{ steps.engraver.outputs.sha }}-${{ hashFiles('**/*.gscore') }}
+          restore-keys: |
+            pages-${{ steps.engraver.outputs.sha }}-
 
       # build.sh finds the soundfont installed above for itself, and says in
       # its output whether it is recording or leaving the pages to make

@@ -31,6 +31,11 @@
 # makes its own sound when somebody presses play. That is what keeps
 # publishing a shelf of a thousand songs a matter of minutes. See BIG.
 #
+# Recording is also done for anything put on the shelf by hand, large or not,
+# because those are the scores somebody chose and there are few of them. A
+# corpus dropped in by the thousand is left to the page's own player. See
+# SYNTH.
+#
 # What comes out:
 #
 #     site/index.html              the shelf
@@ -55,6 +60,11 @@
 #     BIG                how many shapes make a score a large one: the ones
 #                        whose drawing is fetched a piece at a time and whose
 #                        sound is recorded in advance. Default 50000.
+#     BUILD_CACHE        where engraved pages are kept between builds.
+#                        Default .build-cache here. NO_CACHE=1 turns it off.
+#     SYNTH              folders holding a bulk import, whose scores are left
+#                        to make their own sound unless they are large.
+#                        Space separated. Default OpenScore-Lieder.
 #
 # Recording is the slow part by a long way — the ninth symphony is about
 # three quarters of an hour of audio and takes about as long to render as it
@@ -122,19 +132,76 @@ fi
 # twentieth of the smallest symphony, which is a comfortable place to sit.
 BIG="${BIG:-50000}"
 
+# The folders a bulk import drops its scores in.
+#
+# Scores under these are left to make their own sound unless they are large,
+# because there are thousands of them and nobody chose them one at a time.
+# Everything else on the shelf is something you put there, and gets a
+# recording. Space separated, matched against the path from here.
+SYNTH="${SYNTH:-OpenScore-Lieder}"
+
+# imported says whether a score came out of one of those folders.
+imported() {
+	for _d in $SYNTH; do
+		case "$1" in "$_d"/*) return 0 ;; esac
+	done
+	return 1
+}
+
 AUDIO_CACHE="${AUDIO_CACHE:-$HERE/.audio-cache}"
 [ -n "$SOUNDFONT" ] && mkdir -p "$AUDIO_CACHE"
+
+# The hash of whatever is fed in. sha256sum on Linux, shasum on a Mac.
+digest() {
+	if have sha256sum; then
+		sha256sum | cut -d' ' -f1
+	else
+		shasum -a 256 | cut -d' ' -f1
+	fi
+}
 
 # What a score hashes to, which is what its recording is filed under. The
 # soundfont is in the key as well: changing it should change the sound, and a
 # cache that ignored it would serve yesterday's instruments for ever.
 sumof() {
-	if have sha256sum; then
-		{ cat "$1"; printf '%s' "$(basename "$SOUNDFONT")"; } | sha256sum | cut -d' ' -f1
-	else
-		{ cat "$1"; printf '%s' "$(basename "$SOUNDFONT")"; } | shasum -a 256 | cut -d' ' -f1
-	fi
+	{ cat "$1"; printf '%s' "$(basename "$SOUNDFONT")"; } | digest
 }
+
+# ── what was built last time ────────────────────────────────────────────────
+#
+# Engraving a score is most of the work here and it is done three times for
+# each one: to read what it says about itself, to draw the cover, and to write
+# the page. A shelf of fourteen hundred songs is six minutes of that, every
+# build, for music that has not changed since the last one.
+#
+# So the answers are kept. A score that is the same score, engraved by the
+# same gscore, built by the same build.sh, is the same page — and that is the
+# whole of the key. Change any of the three and the key changes and the work
+# is done again, which is what makes keeping the answers safe rather than a
+# way of publishing something stale.
+BUILD_CACHE="${BUILD_CACHE:-$HERE/.build-cache}"
+if [ "${NO_CACHE:-0}" = 1 ]; then
+	BUILD_CACHE=""
+else
+	mkdir -p "$BUILD_CACHE"
+fi
+
+# Which gscore, and which build.sh. Asked once: neither can change while a
+# build is running.
+#
+# The gscore is the binary itself and not the version it prints. A gscore
+# built from changed code reports the same version as the one before it —
+# "dev" until somebody bumps it — so keying on the version hands back pages
+# drawn by a gscore that no longer exists, which is the one mistake a cache
+# must not make and precisely the thing this one is here to prevent. Hashing
+# forty megabytes costs a fraction of a second, once.
+BUILD_ID=$(digest < "$0")
+GSCORE_BIN=$(command -v "$GSCORE" 2>/dev/null || printf '%s' "$GSCORE")
+if [ -f "$GSCORE_BIN" ]; then
+	GSCORE_ID=$(digest < "$GSCORE_BIN")
+else
+	GSCORE_ID=$("$GSCORE" -version 2>/dev/null || echo unknown)
+fi
 
 # record makes the recording for one score, or finds it already made.
 #   record <score file> <where to put the .m4a>
@@ -193,6 +260,9 @@ esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 : > "$OUT/.rows"
 : > "$OUT/.skipped"
 
+# How many came back from the cache rather than being engraved again.
+kept=0
+
 # Everywhere but the build's own output and git's. read -r so that a folder
 # or a piece with a space in its name is one name and not two, which is most
 # of them.
@@ -244,7 +314,19 @@ while IFS= read -r file <&3; do
 	# file that was still copying when the build began — which is how
 	# this was found: an empty file, dropped in and picked up a moment
 	# too early.
-	if ! info=$("$GSCORE" -describe "$file" 2>&1); then
+	# Asked once per score per gscore. What it answers cannot change while
+	# neither of those does, and it is the slow half of this step.
+	info=""
+	said=""
+	if [ -n "$BUILD_CACHE" ] && [ -s "$file" ]; then
+		said="$BUILD_CACHE/$({ cat "$file"; printf '%s' "$GSCORE_ID"; } | digest).said"
+		if [ -f "$said" ]; then
+			info=$(cat "$said")
+		fi
+	fi
+	if [ -n "$info" ]; then
+		:
+	elif ! info=$("$GSCORE" -describe "$file" 2>&1); then
 		why=$(printf '%s' "$info" | sed 's/^gscore: //' | head -1)
 		# A file that is not there and a file with nothing in it are
 		# different problems, and saying "empty" for both hid a real one:
@@ -259,18 +341,14 @@ while IFS= read -r file <&3; do
 		printf '%s\t%s\n' "$rel" "$why" >> "$OUT/.skipped"
 		rm -rf "$OUT/$slug"
 		continue
+	elif [ -n "$said" ]; then
+		printf '%s\n' "$info" > "$said"
 	fi
 	field() { printf '%s\n' "$info" | sed -n "s/^$1  *//p" | head -1; }
 	title=$(field title); [ -n "$title" ] || title="$name"
 
 	# The score itself, which is also its PDF: one file, two uses.
 	cp "$file" "$OUT/$slug/$name.gscore"
-
-	# The first page, as the picture the shelf is read by.
-	"$GSCORE" -o "$OUT/$slug/.cover.pdf" "$file" >/dev/null
-	pdftoppm -r 80 -f 1 -l 1 -png -singlefile "$OUT/$slug/.cover.pdf" "$OUT/$slug/cover"
-	pages=$(pdfinfo "$OUT/$slug/.cover.pdf" 2>/dev/null | sed -n 's/^Pages: *//p')
-	rm -f "$OUT/$slug/.cover.pdf"
 
 	# Whether the drawing goes in the page or beside it.
 	#
@@ -310,19 +388,58 @@ while IFS= read -r file <&3; do
 	# telephone exchange, and that is what the recordings are for.
 	#
 	# And they are not cheap. A song is five and a half seconds to render and
-	# encode and a megabyte and a half of audio; the Lieder corpus is thirteen
-	# hundred songs, which is two hours of recording and two gigabytes to
-	# publish, for music that would have played by itself. So the same measure
-	# decides this as decides the drawing: a score big enough to need the
-	# drawing fetched is a score big enough to need its sound made in advance.
+	# encode and a megabyte and a half of audio. An imported corpus is
+	# fourteen hundred songs, which is two hours of recording and over two
+	# gigabytes to publish — more than GitHub Pages will serve at all, for
+	# music that would have played by itself.
+	#
+	# So two things get a recording. Anything large, because the page's player
+	# cannot do it at any quality. And anything you put on the shelf by hand,
+	# wherever it did not come out of a bulk import: those are the scores
+	# somebody chose, and they are few enough to be worth the minutes. A
+	# corpus of a thousand songs is left to synthesise, which is what keeps
+	# publishing it a matter of minutes rather than an afternoon. See SYNTH.
 	audio=""
-	if [ -n "$SOUNDFONT" ] && [ "$big" = 1 ]; then
+	if [ -n "$SOUNDFONT" ] && { [ "$big" = 1 ] || ! imported "$rel"; }; then
 		if record "$file" "$OUT/$slug/audio.m4a"; then
 			audio="audio.m4a"
 		else
 			rm -f "$OUT/$slug/audio.m4a"
 		fi
 	fi
+
+	# The cover, the page and the shelf's row for this score.
+	#
+	# All three are made by engraving it, which is most of the cost of a
+	# build, so all three are kept together under one key. What they depend on
+	# is the whole of that key: the score itself, the gscore that drew it,
+	# this build.sh, where the score sits on the shelf — the page reaches back
+	# up to the shared font and player, so its depth is in it — and whether it
+	# came out with a recording beside it and a drawing in pieces. Nothing
+	# else can change what was written, so nothing else belongs in the key.
+	pdir=""
+	prow=""
+	if [ -n "$BUILD_CACHE" ] && [ -s "$file" ]; then
+		pkey=$({ cat "$file"
+			printf '%s\0%s\0%s\0%s\0%s' \
+				"$GSCORE_ID" "$BUILD_ID" "$rel" "$audio" "$bands"
+		} | digest)
+		pdir="$BUILD_CACHE/$pkey.page"
+		prow="$BUILD_CACHE/$pkey.row"
+	fi
+
+	if [ -n "$prow" ] && [ -f "$prow" ] && [ -d "$pdir" ]; then
+		cp -R "$pdir/." "$OUT/$slug/"
+		cat "$prow" >> "$OUT/.rows"
+		kept=$((kept + 1))
+		continue
+	fi
+
+	# The first page, as the picture the shelf is read by.
+	"$GSCORE" -o "$OUT/$slug/.cover.pdf" "$file" >/dev/null
+	pdftoppm -r 80 -f 1 -l 1 -png -singlefile "$OUT/$slug/.cover.pdf" "$OUT/$slug/cover"
+	pages=$(pdfinfo "$OUT/$slug/.cover.pdf" 2>/dev/null | sed -n 's/^Pages: *//p')
+	rm -f "$OUT/$slug/.cover.pdf"
 
 	# The playable page, with the font and the player left outside it.
 	#
@@ -335,11 +452,26 @@ while IFS= read -r file <&3; do
 
 	taglist=$(field tags | tr ',' '\n' | sed 's/^ *//; s/ *$//' |
 		grep -v '^$' | sed 's/"/\\"/g; s/.*/"&"/' | paste -sd, -)
-	printf '{"slug":"%s","file":"%s","folder":"%s","title":"%s","composer":"%s","description":"%s","pages":%s,"tags":[%s]}\n' \
+	row=$(printf '{"slug":"%s","file":"%s","folder":"%s","title":"%s","composer":"%s","description":"%s","pages":%s,"tags":[%s]}' \
 		"$(esc "$slug")" "$(esc "$name.gscore")" "$(esc "$dir")" \
 		"$(esc "$title")" "$(esc "$(field composer)")" \
-		"$(esc "$(field description)")" "${pages:-0}" "$taglist" \
-		>> "$OUT/.rows"
+		"$(esc "$(field description)")" "${pages:-0}" "$taglist")
+	printf '%s\n' "$row" >> "$OUT/.rows"
+
+	# Kept for the next build. The recording is not in here: it has a cache of
+	# its own, keyed on the soundfont as well, and it is copied in above.
+	if [ -n "$pdir" ]; then
+		rm -rf "$pdir"
+		mkdir -p "$pdir"
+		for made in "$OUT/$slug/cover.png" "$OUT/$slug/play.html" \
+			"$OUT/$slug"/play.*.svg
+		do
+			if [ -f "$made" ]; then
+				cp "$made" "$pdir/"
+			fi
+		done
+		printf '%s\n' "$row" > "$prow"
+	fi
 done 3< "$list"
 rm -f "$list"
 
@@ -356,6 +488,9 @@ cp "$HERE/index.html" "$OUT/index.html"
 n=$(grep -c '"slug"' "$OUT/scores.json" || true)
 skipped=$(wc -l < "$OUT/.skipped" | tr -d ' ')
 echo "built $n score(s) into $OUT"
+if [ "$kept" -gt 0 ]; then
+	echo "$kept of them came back from the cache, unchanged since the last build"
+fi
 if [ "$skipped" -gt 0 ]; then
 	echo "$skipped could not be read:" >&2
 	sed 's/^/  /; s/\t/: /' "$OUT/.skipped" >&2

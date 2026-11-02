@@ -1,3 +1,4 @@
 /site/
 /.audio-cache/
 /.openscore/
+/.build-cache/

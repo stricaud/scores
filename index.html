@@ -1,0 +1,201 @@
+<!doctype html>
+<!--
+  index.html
+  scores - a shelf of music
+
+  (C) Copyright 2026 Sebastien Tricaud
+
+  Permission is hereby granted, free of charge, under the terms of the MIT
+  licence; see the LICENSE file at the root of this repository.
+
+  The shelf. Built by build.sh, which writes scores.json beside it; this
+  page is the same every time and does not need rebuilding when a score is
+  added.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Scores</title>
+<style>
+  /* The same two palettes gscore uses, so the shelf and the editor look
+     like one thing, and the dark one is a real choice rather than an
+     inversion. */
+  :root {
+    color-scheme: light;
+    --bg: #d9d6d0; --panel: #e8e6e1; --ink: #1c1a18; --muted: #6d6862;
+    --line: #a9a49b; --accent: #2f6f9f; --accent-soft: #cfe2f0;
+    --paper: #fff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #23211f; --panel: #2c2a27; --ink: #eceae6; --muted: #9a948c;
+      --line: #45413c; --accent: #6ba7d6; --accent-soft: #2a4357;
+      --paper: #f7f6f3;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 16px 48px;
+    background: var(--bg); color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header { max-width: 1100px; margin: 0 auto; padding: 28px 0 14px; }
+  h1 { margin: 0 0 4px; font-size: 26px; letter-spacing: -.01em; }
+  .count { color: var(--muted); font-size: 14px; }
+
+  .controls {
+    max-width: 1100px; margin: 0 auto 18px;
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  }
+  #q {
+    flex: 1 1 14em; min-width: 12em;
+    padding: 7px 11px; font: inherit;
+    border: 1px solid var(--line); border-radius: 7px;
+    background: var(--paper); color: #1c1a18;
+  }
+  .tag {
+    padding: 4px 10px; font-size: 13px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 999px;
+    background: var(--panel); color: inherit;
+  }
+  .tag:hover { background: var(--accent-soft); }
+  .tag.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .shelf {
+    max-width: 1100px; margin: 0 auto;
+    display: grid; gap: 18px;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  }
+  .score {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  /* The first page, which is what a shelf of music is read by: you know
+     the piece by the look of it long before you read the title. */
+  .score a.cover {
+    display: block; background: var(--paper); line-height: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .score img { width: 100%; height: auto; display: block; }
+  .score .about { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
+  .score h2 { margin: 0; font-size: 15px; line-height: 1.3; }
+  .score h2 a { color: inherit; text-decoration: none; }
+  .score h2 a:hover { text-decoration: underline; }
+  .by, .pages { color: var(--muted); font-size: 13px; }
+  .desc { font-size: 13px; }
+  .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+  .tags span {
+    font-size: 11.5px; padding: 2px 7px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--ink);
+  }
+  .links { margin-top: auto; padding-top: 8px; display: flex; gap: 10px; font-size: 13px; }
+  .links a { color: var(--accent); text-decoration: none; }
+  .links a:hover { text-decoration: underline; }
+  .none { max-width: 1100px; margin: 40px auto; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Scores</h1>
+  <div class="count" id="count"></div>
+</header>
+<div class="controls">
+  <input id="q" type="search" placeholder="Search titles, composers, words…" autocomplete="off">
+  <span id="tags"></span>
+</div>
+<div class="shelf" id="shelf"></div>
+<p class="none" id="none" hidden>Nothing matches.</p>
+
+<script>
+// The shelf is built from scores.json, which build.sh writes. Keeping the
+// list out of the page means adding a score is adding a file and running
+// the build — this page never changes.
+const shelf = document.getElementById("shelf");
+const countEl = document.getElementById("count");
+const tagBar = document.getElementById("tags");
+const search = document.getElementById("q");
+const none = document.getElementById("none");
+
+let all = [];
+let picked = new Set();
+
+const esc = (s) => String(s).replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function matches(s) {
+  // Every picked tag, not any of them: picking "flute" and "duet" means
+  // flute duets, which is what picking two of anything usually means.
+  for (const t of picked) {
+    if (!(s.tags || []).some((x) => x.toLowerCase() === t)) return false;
+  }
+  const q = search.value.trim().toLowerCase();
+  if (!q) return true;
+  return [s.title, s.composer, s.description, ...(s.tags || [])]
+    .filter(Boolean).join(" ").toLowerCase().includes(q);
+}
+
+function draw() {
+  const shown = all.filter(matches);
+  shelf.innerHTML = shown.map((s) => `
+    <div class="score">
+      <a class="cover" href="${esc(s.slug)}/play.html">
+        <img src="${esc(s.slug)}/cover.png" alt="The first page of ${esc(s.title)}" loading="lazy">
+      </a>
+      <div class="about">
+        <h2><a href="${esc(s.slug)}/play.html">${esc(s.title)}</a></h2>
+        ${s.composer ? `<div class="by">${esc(s.composer)}</div>` : ""}
+        ${s.description ? `<div class="desc">${esc(s.description)}</div>` : ""}
+        ${s.pages ? `<div class="pages">${s.pages} page${s.pages === 1 ? "" : "s"}</div>` : ""}
+        ${(s.tags || []).length
+          ? `<div class="tags">${s.tags.map((t) => `<span>${esc(t)}</span>`).join("")}</div>` : ""}
+        <div class="links">
+          <a href="${esc(s.slug)}/play.html">Play</a>
+          <!-- One file, two uses: a .gscore is also a valid PDF, so this
+               opens in any reader and opens in gscore. -->
+          <a href="${esc(s.slug)}/${esc(s.file)}" download>Download</a>
+        </div>
+      </div>
+    </div>`).join("");
+  none.hidden = shown.length > 0;
+  countEl.textContent = shown.length === all.length
+    ? `${all.length} score${all.length === 1 ? "" : "s"}`
+    : `${shown.length} of ${all.length}`;
+}
+
+function drawTags() {
+  const seen = new Map();
+  for (const s of all) {
+    for (const t of s.tags || []) {
+      const key = t.toLowerCase();
+      if (!seen.has(key)) seen.set(key, t);
+    }
+  }
+  tagBar.innerHTML = "";
+  for (const [key, label] of [...seen].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const b = document.createElement("button");
+    b.className = "tag";
+    b.type = "button";
+    b.textContent = label;
+    b.onclick = () => {
+      if (picked.has(key)) picked.delete(key); else picked.add(key);
+      b.classList.toggle("on", picked.has(key));
+      draw();
+    };
+    tagBar.appendChild(b);
+  }
+}
+
+search.addEventListener("input", draw);
+
+fetch("scores.json")
+  .then((r) => r.json())
+  .then((rows) => { all = rows; drawTags(); draw(); })
+  .catch(() => {
+    countEl.textContent = "scores.json is not here — run build.sh";
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,77 @@
+# pages.yml
+# scores - a shelf of music
+#
+# (C) Copyright 2026 Sebastien Tricaud
+#
+# Permission is hereby granted, free of charge, under the terms of the MIT
+# licence; see the LICENSE file at the root of this repository.
+#
+# Builds the shelf and publishes it to GitHub Pages.
+#
+# Nothing here runs a server: gscore writes pages that play the music by
+# themselves, so what is published is files. The build is the only moving
+# part, and it runs when a score is pushed.
+
+name: Build the shelf
+
+on:
+  push:
+    branches: [main]
+  # So the shelf can be rebuilt after gscore itself changes, without
+  # having to touch a score to make it happen.
+  workflow_dispatch:
+
+# One at a time, and let a newer push win: two builds racing to publish
+# would leave whichever finished last, which is not necessarily the newer.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # gscore is built from source rather than taken from a release, so
+      # the shelf is always drawn by the engraver as it stands now. It is
+      # a Go program with no cgo in this path, so this is quick.
+      - uses: actions/checkout@v4
+        with:
+          repository: stricaud/gscore
+          path: .gscore-src
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .gscore-src/go.mod
+          cache-dependency-path: .gscore-src/go.sum
+      - name: Build gscore
+        run: go build -o "$RUNNER_TEMP/gscore" .
+        working-directory: .gscore-src
+
+      # pdftoppm turns each score's first page into the picture on the
+      # shelf.
+      - name: Install poppler
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+
+      - name: Build the shelf
+        run: ./build.sh "$RUNNER_TEMP/gscore"
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

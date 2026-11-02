@@ -39,8 +39,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # gscore is built from source rather than taken from a release, so
-      # the shelf is always drawn by the engraver as it stands now. It is
-      # a Go program with no cgo in this path, so this is quick.
+      # the shelf is always drawn by the engraver as it stands now.
       - uses: actions/checkout@v4
         with:
           repository: stricaud/gscore
@@ -49,8 +48,14 @@ jobs:
         with:
           go-version-file: .gscore-src/go.mod
           cache-dependency-path: .gscore-src/go.sum
+      # CGO_ENABLED=0 because with cgo on, gscore links a native window
+      # through webview, which wants gtk+-3.0 and webkit2gtk — neither of
+      # which the runner has, and neither of which the shelf needs: the
+      # only thing asked of gscore here is -describe. gscore's
+      # internal/desktop has a !cgo build that leaves the window out, so
+      # this is the same binary its own Makefile ships for Linux.
       - name: Build gscore
-        run: go build -o "$RUNNER_TEMP/gscore" .
+        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/gscore" .
         working-directory: .gscore-src
 
       # pdftoppm turns each score's first page into the picture on the

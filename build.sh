@@ -12,13 +12,20 @@
 #
 # Everything here is static, which is why this can live on GitHub Pages
 # with no server behind it: gscore writes a page that plays the music by
-# itself — the sound is synthesised in the browser, so there is no
-# soundfont to fetch — and a .gscore file is also a valid PDF, so one file
-# is both the score and its printable copy.
+# itself, and a .gscore file is also a valid PDF, so one file is both the
+# score and its printable copy.
 #
 # Scores are found wherever they are. Put them in folders that mean
 # something to you; the folder travels with the score to the shelf and can
 # be searched for, and nothing here needs telling about it.
+#
+# If there is a soundfont to record through, each score is also recorded —
+# by gscore, here, once — and its page plays that instead of synthesising
+# the music in the browser. The page's own player is one oscillator a note:
+# fine for a minuet, and nothing like an orchestra. A recording is the
+# instruments, and it is streamed rather than parsed, so a symphony starts
+# before it has finished arriving. Without a soundfont the shelf is built
+# exactly as it was, with pages that make their own sound.
 #
 # What comes out:
 #
@@ -27,11 +34,28 @@
 #     site/font.otf, player.js     fetched once for the whole site
 #     site/<path>/cover.png        the first page
 #     site/<path>/play.html        the score, playable
+#     site/<path>/audio.m4a        the recording, if one was made
 #     site/<path>/<name>.gscore    the file, which is also the PDF
 #
-# Needs: gscore, and pdftoppm from poppler-utils.
+# Needs: gscore, and pdftoppm from poppler-utils. For the recordings, a
+# soundfont and ffmpeg; without either, the pages synthesise as before.
 #
 # Usage: ./build.sh [path-to-gscore]
+#
+# Environment:
+#
+#     GSCORE_SOUNDFONT   the .sf2 to record through. Unset looks in the
+#                        usual places; set to "none" turns recording off.
+#     AUDIO_CACHE        where recordings are kept between builds.
+#                        Default .audio-cache here.
+#
+# Recording is the slow part by a long way — the ninth symphony is about
+# three quarters of an hour of audio and takes about as long to render as it
+# does to play — so a recording is kept under AUDIO_CACHE against a hash of
+# the score that produced it, and a score that has not changed since the
+# last build is not recorded again. In CI that directory wants to be a
+# cache; the first build after adding a symphony is a long one and every
+# build after it is not.
 
 set -eu
 
@@ -44,6 +68,95 @@ have "$GSCORE" || { echo "build.sh: cannot run '$GSCORE' — pass the path to it
 # Checked before anything is written, because a build that lays down
 # twenty pages and then stops is worse than one that does not start.
 have pdftoppm || { echo "build.sh: pdftoppm is not here — it is in poppler-utils" >&2; exit 1; }
+
+# ── the soundfont to record through, if there is one ────────────────────────
+#
+# Looked for rather than required. A shelf with no soundfont about is a shelf
+# of pages that make their own sound, which is what this was before and is
+# still worth publishing; it is not a reason to refuse to build.
+SOUNDFONT="${GSCORE_SOUNDFONT-}"
+if [ "$SOUNDFONT" = none ]; then
+	SOUNDFONT=""
+elif [ -z "$SOUNDFONT" ]; then
+	# Where a soundfont is on the machines this runs on: the Debian and
+	# Ubuntu packages first, because that is what CI installs, then the
+	# places gscore itself looks on a desktop.
+	for cand in \
+		/usr/share/sounds/sf2/FluidR3_GM.sf2 \
+		/usr/share/sounds/sf2/TimGM6mb.sf2 \
+		/usr/share/soundfonts/default.sf2 \
+		"$HOME/Library/Application Support/Gscore/soundfonts/GeneralUser GS.sf2" \
+		"$HOME/.local/share/soundfonts/GeneralUser GS.sf2"
+	do
+		[ -f "$cand" ] && { SOUNDFONT=$cand; break; }
+	done
+fi
+# ffmpeg too: gscore records FLAC, which is right for keeping and far too
+# large to serve — three quarters of an hour of orchestra is 230 MB of it,
+# and 56 MB once encoded. Without something to encode with there is nothing
+# worth publishing, so the recording is skipped rather than half done.
+if [ -n "$SOUNDFONT" ] && ! have ffmpeg; then
+	echo "build.sh: no ffmpeg, so the scores will not be recorded" >&2
+	SOUNDFONT=""
+fi
+if [ -n "$SOUNDFONT" ]; then
+	echo "recording through $(basename "$SOUNDFONT")"
+else
+	echo "no soundfont: the pages will synthesise their own sound"
+fi
+
+AUDIO_CACHE="${AUDIO_CACHE:-$HERE/.audio-cache}"
+[ -n "$SOUNDFONT" ] && mkdir -p "$AUDIO_CACHE"
+
+# What a score hashes to, which is what its recording is filed under. The
+# soundfont is in the key as well: changing it should change the sound, and a
+# cache that ignored it would serve yesterday's instruments for ever.
+sumof() {
+	if have sha256sum; then
+		{ cat "$1"; printf '%s' "$(basename "$SOUNDFONT")"; } | sha256sum | cut -d' ' -f1
+	else
+		{ cat "$1"; printf '%s' "$(basename "$SOUNDFONT")"; } | shasum -a 256 | cut -d' ' -f1
+	fi
+}
+
+# record makes the recording for one score, or finds it already made.
+#   record <score file> <where to put the .m4a>
+record() {
+	_src=$1
+	_dst=$2
+	_key=$(sumof "$_src")
+	_kept="$AUDIO_CACHE/$_key.m4a"
+
+	if [ -f "$_kept" ]; then
+		cp "$_kept" "$_dst"
+		echo "    recording: from the cache"
+		return 0
+	fi
+
+	# FLAC first because that is what gscore writes, then encoded for
+	# serving. AAC rather than Opus: every browser plays it, Safari
+	# included, and a recording nobody can hear is not an improvement.
+	# +faststart puts the index at the front, so playing can begin on the
+	# first part of the file instead of waiting for all of it.
+	_flac=$(mktemp "${TMPDIR:-/tmp}/gscore-rec.XXXXXX") || return 1
+	mv "$_flac" "$_flac.flac"
+	_flac="$_flac.flac"
+	echo "    recording (this is the slow part)…"
+	if ! "$GSCORE" -o "$_flac" -soundfont "$SOUNDFONT" "$_src" >/dev/null 2>&1; then
+		echo "    recording failed; the page will synthesise instead" >&2
+		rm -f "$_flac"
+		return 1
+	fi
+	if ! ffmpeg -v error -y -i "$_flac" -c:a aac -b:a 128k \
+		-movflags +faststart "$_dst" >/dev/null 2>&1; then
+		echo "    encoding failed; the page will synthesise instead" >&2
+		rm -f "$_flac" "$_dst"
+		return 1
+	fi
+	rm -f "$_flac"
+	cp "$_dst" "$_kept"
+	return 0
+}
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
@@ -113,9 +226,26 @@ while IFS= read -r file; do
 	pages=$(pdfinfo "$OUT/$slug/.cover.pdf" 2>/dev/null | sed -n 's/^Pages: *//p')
 	rm -f "$OUT/$slug/.cover.pdf"
 
+	# The recording, if there is a soundfont to make one through. It sits
+	# beside the page rather than inside it, so the page is small and the
+	# sound is streamed.
+	audio=""
+	if [ -n "$SOUNDFONT" ]; then
+		if record "$file" "$OUT/$slug/audio.m4a"; then
+			audio="audio.m4a"
+		else
+			rm -f "$OUT/$slug/audio.m4a"
+		fi
+	fi
+
 	# The playable page, with the font and the player left outside it.
+	#
+	# With a recording the page plays that; without one it synthesises, as
+	# it always did. -audio "" is the same as not passing it, so this is one
+	# call either way.
 	"$GSCORE" -o "$OUT/$slug/play.html" \
-		-font "${up}font.otf" -script "${up}player.js" "$file" >/dev/null
+		-font "${up}font.otf" -script "${up}player.js" \
+		-audio "$audio" "$file" >/dev/null
 
 	taglist=$(field tags | tr ',' '\n' | sed 's/^ *//; s/ *$//' |
 		grep -v '^$' | sed 's/"/\\"/g; s/.*/"&"/' | paste -sd, -)

@@ -59,10 +59,33 @@ jobs:
         working-directory: .gscore-src
 
       # pdftoppm turns each score's first page into the picture on the
-      # shelf.
-      - name: Install poppler
-        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+      # shelf. ffmpeg encodes the recordings, and the soundfont is what they
+      # are recorded through — from Ubuntu's own packages rather than a
+      # download, so there is no third-party address to go stale.
+      - name: Install poppler, ffmpeg and a soundfont
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils ffmpeg fluid-soundfont-gm
 
+      # The recordings, kept between builds.
+      #
+      # Recording is far and away the slowest thing here — the ninth
+      # symphony is three quarters of an hour of audio and takes about seven
+      # minutes to render and encode — and a score does not change once it
+      # is on the shelf. So the key is what the scores hash to: unchanged,
+      # the whole lot comes back and nothing is recorded; add one, and the
+      # restore-key brings back the rest so only the new score is.
+      - uses: actions/cache@v4
+        with:
+          path: .audio-cache
+          key: audio-${{ hashFiles('**/*.gscore') }}
+          restore-keys: |
+            audio-
+
+      # build.sh finds the soundfont installed above for itself, and says in
+      # its output whether it is recording or leaving the pages to make
+      # their own sound. A score it has a recording for already costs
+      # nothing here; a new symphony is about seven minutes.
       - name: Build the shelf
         run: ./build.sh "$RUNNER_TEMP/gscore"
 

@@ -142,13 +142,17 @@ record() {
 	mv "$_flac" "$_flac.flac"
 	_flac="$_flac.flac"
 	echo "    recording (this is the slow part)…"
-	if ! "$GSCORE" -o "$_flac" -soundfont "$SOUNDFONT" "$_src" >/dev/null 2>&1; then
+	if ! "$GSCORE" -o "$_flac" -soundfont "$SOUNDFONT" "$_src" \
+		</dev/null >/dev/null 2>&1; then
 		echo "    recording failed; the page will synthesise instead" >&2
 		rm -f "$_flac"
 		return 1
 	fi
-	if ! ffmpeg -v error -y -i "$_flac" -c:a aac -b:a 128k \
-		-movflags +faststart "$_dst" >/dev/null 2>&1; then
+	# -nostdin, and stdin closed, because ffmpeg reads it for keystrokes
+	# unless told not to. See the note on the list of scores below: it ate
+	# them.
+	if ! ffmpeg -nostdin -v error -y -i "$_flac" -c:a aac -b:a 128k \
+		-movflags +faststart "$_dst" </dev/null >/dev/null 2>&1; then
 		echo "    encoding failed; the page will synthesise instead" >&2
 		rm -f "$_flac" "$_dst"
 		return 1
@@ -172,13 +176,30 @@ esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 : > "$OUT/.rows"
 : > "$OUT/.skipped"
 
-# Everywhere but the build's own output and git's. -print0 and read -r so
-# that a folder or a piece with a space in its name is one name and not
-# two, which is most of them.
+# Everywhere but the build's own output and git's. read -r so that a folder
+# or a piece with a space in its name is one name and not two, which is most
+# of them.
+#
+# The list goes into a file and the loop reads it on a descriptor of its own,
+# rather than coming down a pipe into the loop's stdin.
+#
+# Down a pipe, the scores not yet read are the loop's standard input, and
+# anything inside the loop that reads standard input eats them. ffmpeg does:
+# it watches stdin for keystrokes unless told not to. So every score that was
+# recorded swallowed the line after it, and the build then looked for a score
+# at half a path — "me/runner/work/..." with the front of it gone. No such
+# file, and the report for a file that is not there is that it is empty, so
+# the shelf quietly came out with Beethoven's ninth and Chopin's nocturne
+# missing and said both files were empty. They were 8 MB and 597 KB.
+#
+# ffmpeg is told not to as well, below. This is the half of the fix that does
+# not have to be remembered again the next time something is added here.
+list="$OUT/.list"
 find "$HERE" -name '*.gscore' -type f \
 	-not -path "$OUT/*" -not -path "$HERE/.git/*" -print |
-	LC_ALL=C sort |
-while IFS= read -r file; do
+	LC_ALL=C sort > "$list"
+
+while IFS= read -r file <&3; do
 	rel=${file#"$HERE"/}                   # classical/bach/prelude.gscore
 	dir=$(dirname "$rel")                  # classical/bach
 	[ "$dir" = "." ] && dir=""
@@ -206,7 +227,13 @@ while IFS= read -r file; do
 	# too early.
 	if ! info=$("$GSCORE" -describe "$file" 2>&1); then
 		why=$(printf '%s' "$info" | sed 's/^gscore: //' | head -1)
-		if [ ! -s "$file" ]; then
+		# A file that is not there and a file with nothing in it are
+		# different problems, and saying "empty" for both hid a real one:
+		# the loop was being handed half a path, and the shelf reported two
+		# perfectly good scores as empty files for an afternoon.
+		if [ ! -e "$file" ]; then
+			why="there is no file at $file"
+		elif [ ! -s "$file" ]; then
 			why="the file is empty"
 		fi
 		echo "    skipped: $why" >&2
@@ -254,7 +281,8 @@ while IFS= read -r file; do
 		"$(esc "$title")" "$(esc "$(field composer)")" \
 		"$(esc "$(field description)")" "${pages:-0}" "$taglist" \
 		>> "$OUT/.rows"
-done
+done 3< "$list"
+rm -f "$list"
 
 # The shelf's own list, sorted the way a shelf is read. The page can sort
 # it again any way it likes.

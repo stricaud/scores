@@ -216,9 +216,11 @@ while IFS= read -r file <&3; do
 	mkdir -p "$OUT/$slug"
 	echo "  $rel"
 
-	# What the score says about itself. -describe reads the file without
-	# the shelf having to open the archive, which is why gscore prints
-	# the description and the tags there.
+	# What the score says about itself. -describe saves the shelf opening
+	# the archive, which is why gscore prints the description and the tags
+	# there — and how many shapes the music comes to, which is the one thing
+	# it has to engrave the score to answer and the reason this step takes a
+	# few seconds on a symphony.
 	#
 	# A score gscore cannot read is reported and stepped over, not a
 	# reason to stop. A shelf of thirty pieces must not be undone by one
@@ -275,16 +277,20 @@ while IFS= read -r file <&3; do
 	# pieces of four systems it is about nine thousand shapes at a time and
 	# the page opens in a second.
 	#
-	# Decided from the size of the music rather than of the file, because a
-	# .gscore carries a PDF of itself and so says more about how many pages
-	# it is than how many shapes. Staves times bars is what the drawing costs.
-	staves=$(printf '%s\n' "$info" | grep -cE '^[^ ].*: .*measures,' || true)
-	measures=$(printf '%s\n' "$info" | sed -nE 's/.*: [a-z]+, ([0-9]+) measures.*/\1/p' | head -1)
-	shapes=$(( ${staves:-1} * ${measures:-1} ))
+	# Asked of gscore, not guessed at here.
+	#
+	# Not from the size of the file: a .gscore carries a PDF of itself, so
+	# its size says how many pages it is rather than how many shapes. And not
+	# from staves times bars either, which was the first try here and is
+	# wrong by a factor of seven on the ninth symphony — fifty-three staves,
+	# most of them resting most of the time, and a bar's rest is one shape
+	# where a beamed chord is a dozen. gscore engraves it and counts what it
+	# drew, which is the number a browser will actually be handed.
+	shapes=$(field shapes)
 	bands=""
-	if [ "$shapes" -gt 20000 ]; then
+	if [ "${shapes:-0}" -gt 50000 ]; then
 		bands="4"
-		echo "    $staves staves x $measures bars: the drawing goes beside the page"
+		echo "    $shapes shapes: the drawing goes beside the page, not in it"
 	fi
 
 	# The playable page, with the font and the player left outside it.

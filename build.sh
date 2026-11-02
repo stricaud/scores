@@ -19,13 +19,17 @@
 # something to you; the folder travels with the score to the shelf and can
 # be searched for, and nothing here needs telling about it.
 #
-# If there is a soundfont to record through, each score is also recorded —
-# by gscore, here, once — and its page plays that instead of synthesising
-# the music in the browser. The page's own player is one oscillator a note:
-# fine for a minuet, and nothing like an orchestra. A recording is the
-# instruments, and it is streamed rather than parsed, so a symphony starts
-# before it has finished arriving. Without a soundfont the shelf is built
-# exactly as it was, with pages that make their own sound.
+# A large score is treated differently from a small one, in two ways that
+# travel together. Its drawing is written beside its page in pieces and
+# fetched as the music needs them, because a browser handed nine hundred
+# thousand shapes at once lays them out for seconds and then has nothing left
+# to animate with. And its sound is recorded in advance, by gscore, through a
+# soundfont, because the player in a page is one oscillator a note — fine for
+# a song, and nothing like an orchestra.
+#
+# A small score needs neither: the drawing goes in the page, and the page
+# makes its own sound when somebody presses play. That is what keeps
+# publishing a shelf of a thousand songs a matter of minutes. See BIG.
 #
 # What comes out:
 #
@@ -48,6 +52,9 @@
 #                        usual places; set to "none" turns recording off.
 #     AUDIO_CACHE        where recordings are kept between builds.
 #                        Default .audio-cache here.
+#     BIG                how many shapes make a score a large one: the ones
+#                        whose drawing is fetched a piece at a time and whose
+#                        sound is recorded in advance. Default 50000.
 #
 # Recording is the slow part by a long way — the ninth symphony is about
 # three quarters of an hour of audio and takes about as long to render as it
@@ -104,6 +111,16 @@ if [ -n "$SOUNDFONT" ]; then
 else
 	echo "no soundfont: the pages will synthesise their own sound"
 fi
+
+# How many shapes make a score a large one.
+#
+# One number, because the two things that follow from it follow together: a
+# drawing too big for a page to hold is also music too big for the page's own
+# player to make a decent noise of. Beethoven's ninth is 955,074 shapes and a
+# song from the Lieder corpus about 5,000, so anything in the tens of
+# thousands separates them; 50,000 is a few times the largest song and a
+# twentieth of the smallest symphony, which is a comfortable place to sit.
+BIG="${BIG:-50000}"
 
 AUDIO_CACHE="${AUDIO_CACHE:-$HERE/.audio-cache}"
 [ -n "$SOUNDFONT" ] && mkdir -p "$AUDIO_CACHE"
@@ -255,18 +272,6 @@ while IFS= read -r file <&3; do
 	pages=$(pdfinfo "$OUT/$slug/.cover.pdf" 2>/dev/null | sed -n 's/^Pages: *//p')
 	rm -f "$OUT/$slug/.cover.pdf"
 
-	# The recording, if there is a soundfont to make one through. It sits
-	# beside the page rather than inside it, so the page is small and the
-	# sound is streamed.
-	audio=""
-	if [ -n "$SOUNDFONT" ]; then
-		if record "$file" "$OUT/$slug/audio.m4a"; then
-			audio="audio.m4a"
-		else
-			rm -f "$OUT/$slug/audio.m4a"
-		fi
-	fi
-
 	# Whether the drawing goes in the page or beside it.
 	#
 	# A score the browser can hold goes in, which is one file and nothing to
@@ -287,10 +292,36 @@ while IFS= read -r file <&3; do
 	# where a beamed chord is a dozen. gscore engraves it and counts what it
 	# drew, which is the number a browser will actually be handed.
 	shapes=$(field shapes)
+	big=0
+	[ "${shapes:-0}" -gt "$BIG" ] && big=1
+
 	bands=""
-	if [ "${shapes:-0}" -gt 50000 ]; then
+	if [ "$big" = 1 ]; then
 		bands="4"
 		echo "    $shapes shapes: the drawing goes beside the page, not in it"
+	fi
+
+	# The recording, for the scores that need one.
+	#
+	# Not for all of them. The player in a page is one oscillator a note,
+	# which is what it was written to be and is fine for a song: a flute and a
+	# piano for three minutes comes out as a flute and a piano, near enough.
+	# It is a symphony it cannot do — fifty-three staves of it sound like a
+	# telephone exchange, and that is what the recordings are for.
+	#
+	# And they are not cheap. A song is five and a half seconds to render and
+	# encode and a megabyte and a half of audio; the Lieder corpus is thirteen
+	# hundred songs, which is two hours of recording and two gigabytes to
+	# publish, for music that would have played by itself. So the same measure
+	# decides this as decides the drawing: a score big enough to need the
+	# drawing fetched is a score big enough to need its sound made in advance.
+	audio=""
+	if [ -n "$SOUNDFONT" ] && [ "$big" = 1 ]; then
+		if record "$file" "$OUT/$slug/audio.m4a"; then
+			audio="audio.m4a"
+		else
+			rm -f "$OUT/$slug/audio.m4a"
+		fi
 	fi
 
 	# The playable page, with the font and the player left outside it.

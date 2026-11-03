@@ -80,18 +80,61 @@
   }
   .pager button:disabled { opacity: .4; cursor: default; }
   .pager .gap { color: var(--muted); padding: 0 2px; }
-  /* The instruments, as things to tick rather than press: a tag is a word
-     about a piece and an instrument is a thing you either play or do not. */
-  .pick {
-    display: inline-flex; align-items: center; gap: 5px;
-    padding: 3px 10px 3px 7px; font-size: 13px; cursor: pointer;
-    border: 1px solid var(--line); border-radius: 999px;
-    background: var(--panel);
+  /* The filters.
+     A thousand scores wants narrowing before it wants browsing, so these sit
+     beside the shelf where there is room and above it where there is not. The
+     instruments are grouped because nobody reads past thirty of anything to
+     find a flute; the groups are in TAXONOMY.md, which says why each one is
+     where it is. */
+  .page {
+    max-width: 1100px; margin: 0 auto;
+    display: grid; gap: 24px; align-items: start;
+    grid-template-columns: 218px minmax(0, 1fr);
   }
-  .pick:hover { background: var(--accent-soft); }
-  .pick input { margin: 0; cursor: pointer; }
-  .pick.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .controls .label { color: var(--muted); font-size: 13px; margin-right: 2px; }
+  .filters {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 13px 14px 16px;
+    position: sticky; top: 14px;
+  }
+  @media (max-width: 820px) {
+    .page { grid-template-columns: 1fr; }
+    .filters { position: static; }
+  }
+  .filters h2 {
+    margin: 0; font-size: 15px;
+    display: flex; align-items: baseline; justify-content: space-between;
+  }
+  .filters h3 {
+    margin: 15px 0 5px; font-size: 11.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+  }
+  .filters details { border-radius: 6px; }
+  .filters summary {
+    cursor: pointer; padding: 3px 2px; font-size: 13.5px;
+    display: flex; align-items: center; gap: 6px; list-style: none;
+  }
+  .filters summary::-webkit-details-marker { display: none; }
+  .filters summary::before {
+    content: "›"; width: 9px; color: var(--muted);
+    transition: transform .12s ease;
+  }
+  .filters details[open] > summary::before { transform: rotate(90deg); }
+  .filters summary:hover { color: var(--accent); }
+  .n { color: var(--muted); font-size: 11.5px; margin-left: auto; }
+  .row {
+    display: flex; align-items: center; gap: 7px; cursor: pointer;
+    padding: 2px 2px 2px 15px; font-size: 13.5px;
+  }
+  .row:hover { color: var(--accent); }
+  .row input { margin: 0; cursor: pointer; }
+  /* Nothing on the shelf is played by it, given everything else picked. Left
+     in place rather than taken away, so the list does not jump about as you
+     tick things. */
+  .row.none-left { opacity: .4; }
+  .clear {
+    font: inherit; font-size: 12px; padding: 0; cursor: pointer;
+    background: none; border: 0; color: var(--accent);
+  }
   .tag.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 
   .shelf {
@@ -137,13 +180,24 @@
   <input id="q" type="search" placeholder="Search titles, composers, words…" autocomplete="off">
   <span id="tags"></span>
 </div>
-<div class="controls" id="instrument-row" hidden>
-  <span class="label">Played by</span>
-  <span id="instruments"></span>
+<div class="page">
+  <aside class="filters">
+    <h2>Filters <button class="clear" id="clear" type="button" hidden>Clear all</button></h2>
+    <div id="facet-difficulty" hidden>
+      <h3>Difficulty</h3>
+      <div id="difficulty"></div>
+    </div>
+    <div id="facet-instruments" hidden>
+      <h3>Instruments</h3>
+      <div id="instruments"></div>
+    </div>
+  </aside>
+  <main>
+    <div class="shelf" id="shelf"></div>
+    <p class="none" id="none" hidden>Nothing matches.</p>
+    <nav class="pager" id="pager" aria-label="Pages of the shelf"></nav>
+  </main>
 </div>
-<div class="shelf" id="shelf"></div>
-<p class="none" id="none" hidden>Nothing matches.</p>
-<nav class="pager" id="pager" aria-label="Pages of the shelf"></nav>
 
 <script>
 // The shelf is built from scores.json, which build.sh writes. Keeping the
@@ -153,7 +207,10 @@ const shelf = document.getElementById("shelf");
 const countEl = document.getElementById("count");
 const tagBar = document.getElementById("tags");
 const instBar = document.getElementById("instruments");
-const instRow = document.getElementById("instrument-row");
+const instFacet = document.getElementById("facet-instruments");
+const diffBar = document.getElementById("difficulty");
+const diffFacet = document.getElementById("facet-difficulty");
+const clearBtn = document.getElementById("clear");
 const pager = document.getElementById("pager");
 const search = document.getElementById("q");
 const none = document.getElementById("none");
@@ -161,6 +218,31 @@ const none = document.getElementById("none");
 let all = [];
 let picked = new Set();
 let played = new Set();
+let levels = new Set();
+
+// The instruments, grouped so that finding a flute is not reading past
+// thirty entries. This is the machine-readable half of TAXONOMY.md, which
+// says what each group is and why the arguable ones landed where they did.
+//
+// Anything gscore names that is missing here falls into "Other" rather than
+// disappearing, so a new instrument reaches the shelf the day it exists.
+const GROUPS = [
+  ["Keyboard", ["piano", "bright piano", "electric piano", "harpsichord",
+                "organ", "accordion", "celesta", "music box"]],
+  ["Voice", ["voice", "choir"]],
+  ["Woodwind", ["flute", "piccolo", "recorder", "pan flute", "ocarina",
+                "oboe", "english horn", "clarinet", "bassoon",
+                "soprano sax", "alto sax", "tenor sax", "baritone sax",
+                "harmonica"]],
+  ["Brass", ["trumpet", "trombone", "french horn", "tuba"]],
+  ["Strings — bowed", ["violin", "viola", "cello", "contrabass", "strings"]],
+  ["Strings — plucked", ["guitar", "electric guitar", "harp", "bass"]],
+  ["Percussion", ["timpani", "glockenspiel", "marimba", "vibraphone"]],
+];
+
+// The difficulty words, hardest last rather than alphabetical: this is a
+// scale and reading it out of order tells you nothing.
+const LEVELS = ["beginner", "intermediate", "advanced"];
 
 // How many scores go on one page of the shelf.
 //
@@ -173,7 +255,7 @@ let page = 0;
 const esc = (s) => String(s).replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-function matches(s) {
+function matches(s, skip) {
   // Every picked tag, not any of them: picking "flute" and "duet" means
   // flute duets, which is what picking two of anything usually means.
   for (const t of picked) {
@@ -181,10 +263,19 @@ function matches(s) {
   }
   // And every picked instrument, by the same rule: ticking voice and piano
   // asks for songs with a piano under them, not for everything with either.
-  // That is what "played by" says, and it is the useful question — a shelf
-  // can already be searched for one word.
-  for (const i of played) {
-    if (!(s.instruments || []).some((x) => x.toLowerCase() === i)) return false;
+  // That is the useful question — a shelf can already be searched for one
+  // word.
+  if (skip !== "instruments") {
+    for (const i of played) {
+      if (!(s.instruments || []).some((x) => x.toLowerCase() === i)) return false;
+    }
+  }
+  // Difficulty is the other way about: any of them, not all. It is one word
+  // out of a scale and a score carries one, so asking for both beginner and
+  // advanced would always answer nothing — a filter that punishes you for
+  // ticking twice.
+  if (skip !== "difficulty" && levels.size) {
+    if (!(s.tags || []).some((x) => levels.has(x.toLowerCase()))) return false;
   }
   const q = search.value.trim().toLowerCase();
   if (!q) return true;
@@ -232,6 +323,7 @@ function draw() {
     ? `${total} — showing ${from + 1}–${from + here.length}`
     : total;
   drawPager(pages);
+  drawFacets();
 }
 
 // The pager: a step either way, the ends always reachable, and a few numbers
@@ -281,32 +373,105 @@ function drawPager(pages) {
   go(page + 1, "Next ›", { dead: page === pages - 1 });
 }
 
-// The instruments anything on the shelf is played by, each once.
-function drawInstruments() {
-  const seen = new Map();
-  for (const s of all) {
-    for (const i of s.instruments || []) {
-      const key = i.toLowerCase();
-      if (!seen.has(key)) seen.set(key, i);
+// Which groups the reader has opened, kept across redraws: the counts change
+// every time anything is ticked, and a panel that folded itself up each time
+// would be unusable.
+let opened = new Set();
+
+// One line of a filter: a box, a word, and how many scores it would leave.
+function pickRow(label, count, on, toggle) {
+  const row = document.createElement("label");
+  row.className = count === 0 && !on ? "row none-left" : "row";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = on;
+  box.onchange = () => {
+    toggle(box.checked);
+    page = 0;
+    draw();
+  };
+  const name = document.createElement("span");
+  name.textContent = label;
+  const n = document.createElement("span");
+  n.className = "n";
+  n.textContent = count.toLocaleString();
+  row.append(box, name, n);
+  return row;
+}
+
+// The filters, and the number beside each one.
+//
+// A count is of what that word would leave given everything else picked, but
+// not given its own facet — otherwise ticking one instrument puts a zero
+// beside every other instrument, which tells the reader nothing and makes the
+// panel look broken.
+function drawFacets() {
+  // Difficulty, hardest last. Only the words actually used appear: most of a
+  // bulk-imported corpus has never been played by anybody here, and offering
+  // a filter that matches nothing is worse than not offering it.
+  const forLevels = all.filter((s) => matches(s, "difficulty"));
+  const lc = new Map();
+  for (const s of forLevels) {
+    for (const t of (s.tags || []).map((x) => x.toLowerCase())) {
+      if (LEVELS.includes(t)) lc.set(t, (lc.get(t) || 0) + 1);
     }
   }
-  instBar.innerHTML = "";
-  instRow.hidden = seen.size === 0;
-  for (const [key, label] of [...seen].sort((a, b) => a[0].localeCompare(b[0]))) {
-    const wrap = document.createElement("label");
-    wrap.className = "pick";
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.onchange = () => {
-      if (box.checked) played.add(key); else played.delete(key);
-      wrap.classList.toggle("on", box.checked);
-      page = 0;
-      draw();
-    };
-    wrap.appendChild(box);
-    wrap.appendChild(document.createTextNode(label));
-    instBar.appendChild(wrap);
+  const shownLevels = LEVELS.filter((l) => lc.has(l) || levels.has(l));
+  diffFacet.hidden = shownLevels.length === 0;
+  diffBar.innerHTML = "";
+  for (const l of shownLevels) {
+    diffBar.appendChild(pickRow(
+      l[0].toUpperCase() + l.slice(1), lc.get(l) || 0, levels.has(l),
+      (on) => { if (on) levels.add(l); else levels.delete(l); }));
   }
+
+  // Instruments, by group.
+  const base = all.filter((s) => matches(s, "instruments"));
+  const ic = new Map();
+  for (const s of base) {
+    for (const v of new Set((s.instruments || []).map((x) => x.toLowerCase()))) {
+      ic.set(v, (ic.get(v) || 0) + 1);
+    }
+  }
+  // Anything gscore names that no group claims, so nothing is unreachable.
+  const known = new Set(GROUPS.flatMap(([, list]) => list));
+  const loose = [...new Set(all.flatMap((s) =>
+    (s.instruments || []).map((x) => x.toLowerCase())))]
+    .filter((i) => !known.has(i)).sort();
+  const groups = loose.length ? [...GROUPS, ["Other", loose]] : GROUPS;
+
+  instBar.innerHTML = "";
+  let any = false;
+  for (const [name, list] of groups) {
+    const here = list.filter((i) => ic.has(i) || played.has(i));
+    if (!here.length) continue;
+    any = true;
+    // Scores, not instruments: a song for voice and piano is one score in
+    // Keyboard, not two, and adding the lines up would say otherwise.
+    const total = base.filter((s) => (s.instruments || [])
+      .some((x) => here.includes(x.toLowerCase()))).length;
+
+    const group = document.createElement("details");
+    group.open = opened.has(name) || here.some((i) => played.has(i));
+    group.addEventListener("toggle", () => {
+      if (group.open) opened.add(name); else opened.delete(name);
+    });
+    const head = document.createElement("summary");
+    const label = document.createElement("span");
+    label.textContent = name;
+    const n = document.createElement("span");
+    n.className = "n";
+    n.textContent = total.toLocaleString();
+    head.append(label, n);
+    group.appendChild(head);
+    for (const i of here) {
+      group.appendChild(pickRow(i, ic.get(i) || 0, played.has(i),
+        (on) => { if (on) played.add(i); else played.delete(i); }));
+    }
+    instBar.appendChild(group);
+  }
+  instFacet.hidden = !any;
+  clearBtn.hidden = !(played.size || levels.size || picked.size);
 }
 
 function drawTags() {
@@ -337,9 +502,21 @@ function drawTags() {
 
 search.addEventListener("input", () => { page = 0; draw(); });
 
+// Back to the whole shelf. The search box is left alone: it is typed into
+// rather than ticked, and clearing what somebody wrote is a different and
+// more annoying thing than clearing what they picked.
+clearBtn.onclick = () => {
+  played.clear();
+  levels.clear();
+  picked.clear();
+  page = 0;
+  drawTags();
+  draw();
+};
+
 fetch("scores.json")
   .then((r) => r.json())
-  .then((rows) => { all = rows; drawTags(); drawInstruments(); draw(); })
+  .then((rows) => { all = rows; drawTags(); draw(); })
   .catch(() => {
     countEl.textContent = "scores.json is not here — run build.sh";
   });

@@ -1,6 +1,7 @@
 /site/
 /.audio-cache/
 /.openscore/
+/.musetrainer/
 /.build-cache/
 
 # Which gscore converted an imported folder, written by import-openscore.sh so

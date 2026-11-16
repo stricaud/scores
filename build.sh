@@ -19,22 +19,13 @@
 # something to you; the folder travels with the score to the shelf and can
 # be searched for, and nothing here needs telling about it.
 #
-# A large score is treated differently from a small one, in two ways that
-# travel together. Its drawing is written beside its page in pieces and
-# fetched as the music needs them, because a browser handed nine hundred
-# thousand shapes at once lays them out for seconds and then has nothing left
-# to animate with. And its sound is recorded in advance, by gscore, through a
-# soundfont, because the player in a page is one oscillator a note — fine for
-# a song, and nothing like an orchestra.
-#
-# A small score needs neither: the drawing goes in the page, and the page
-# makes its own sound when somebody presses play. That is what keeps
-# publishing a shelf of a thousand songs a matter of minutes. See BIG.
-#
-# Recording is also done for anything put on the shelf by hand, large or not,
-# because those are the scores somebody chose and there are few of them. A
-# corpus dropped in by the thousand is left to the page's own player. See
-# SYNTH.
+# This file is the shelf: it finds the scores, puts each through engrave.sh,
+# several at a time, and gathers what comes back into one list. Everything
+# that is done to a single score — its cover, its page, its recording, what
+# makes it a large one — is in engrave.sh, and the split is deliberate: the
+# engraved pages are cached against a hash of the recipe that made them, so a
+# change here redraws nothing, and a change there redraws everything. See
+# the top of engrave.sh.
 #
 # What comes out:
 #
@@ -46,8 +37,8 @@
 #     site/<path>/audio.m4a        the recording, if one was made
 #     site/<path>/<name>.gscore    the file, which is also the PDF
 #
-# Needs: gscore, and pdftoppm from poppler-utils. For the recordings, a
-# soundfont and ffmpeg; without either, the pages synthesise as before.
+# Needs: gscore, and pdftoppm and pdfinfo from poppler-utils. For the
+# recordings, a soundfont and ffmpeg; without either, the pages synthesise.
 #
 # Usage: ./build.sh [path-to-gscore]
 #
@@ -65,14 +56,19 @@
 #     SYNTH              folders holding a bulk import, whose scores are left
 #                        to make their own sound unless they are large.
 #                        Space separated. Default OpenScore-Lieder.
+#     JOBS               how many scores to engrave at once. Default: as
+#                        many as there are processors.
 #
-# Recording is the slow part by a long way — the ninth symphony is about
-# three quarters of an hour of audio and takes about as long to render as it
-# does to play — so a recording is kept under AUDIO_CACHE against a hash of
-# the score that produced it, and a score that has not changed since the
-# last build is not recorded again. In CI that directory wants to be a
-# cache; the first build after adding a symphony is a long one and every
-# build after it is not.
+# On the caches. Engraving is most of the work and recording is the slow
+# part by a long way — the ninth symphony is about three quarters of an hour
+# of audio and takes about as long to render as it does to play — and a score
+# that is on the shelf does not change. So both are kept between builds, the
+# recordings under AUDIO_CACHE against the score and the soundfont, the pages
+# under BUILD_CACHE against the score, the gscore and the recipe; what has
+# not changed is copied back and not made again. In CI both directories are
+# caches, and the gscore is pinned (see GSCORE_REV) so that the key does not
+# move under them: the first build after adding a symphony is a long one and
+# every build after it is not.
 
 set -eu
 
@@ -85,6 +81,7 @@ have "$GSCORE" || { echo "build.sh: cannot run '$GSCORE' — pass the path to it
 # Checked before anything is written, because a build that lays down
 # twenty pages and then stops is worse than one that does not start.
 have pdftoppm || { echo "build.sh: pdftoppm is not here — it is in poppler-utils" >&2; exit 1; }
+have pdfinfo || { echo "build.sh: pdfinfo is not here — it is in poppler-utils" >&2; exit 1; }
 
 # ── the soundfont to record through, if there is one ────────────────────────
 #
@@ -105,7 +102,7 @@ elif [ -z "$SOUNDFONT" ]; then
 		"$HOME/Library/Application Support/Gscore/soundfonts/GeneralUser GS.sf2" \
 		"$HOME/.local/share/soundfonts/GeneralUser GS.sf2"
 	do
-		[ -f "$cand" ] && { SOUNDFONT=$cand; break; }
+		if [ -f "$cand" ]; then SOUNDFONT=$cand; break; fi
 	done
 fi
 # ffmpeg too: gscore records FLAC, which is right for keeping and far too
@@ -132,24 +129,25 @@ fi
 # twentieth of the smallest symphony, which is a comfortable place to sit.
 BIG="${BIG:-50000}"
 
-# The folders a bulk import drops its scores in.
-#
-# Scores under these are left to make their own sound unless they are large,
-# because there are thousands of them and nobody chose them one at a time.
-# Everything else on the shelf is something you put there, and gets a
-# recording. Space separated, matched against the path from here.
+# The folders a bulk import drops its scores in. Scores under these are left
+# to make their own sound unless they are large, because there are thousands
+# of them and nobody chose them one at a time. Space separated, matched
+# against the path from here.
 SYNTH="${SYNTH:-OpenScore-Lieder}"
-
-# imported says whether a score came out of one of those folders.
-imported() {
-	for _d in $SYNTH; do
-		case "$1" in "$_d"/*) return 0 ;; esac
-	done
-	return 1
-}
 
 AUDIO_CACHE="${AUDIO_CACHE:-$HERE/.audio-cache}"
 [ -n "$SOUNDFONT" ] && mkdir -p "$AUDIO_CACHE"
+
+BUILD_CACHE="${BUILD_CACHE:-$HERE/.build-cache}"
+if [ "${NO_CACHE:-0}" = 1 ]; then
+	BUILD_CACHE=""
+else
+	mkdir -p "$BUILD_CACHE"
+fi
+
+# How many at once. gscore engraves on one processor, and a runner has four
+# and a laptop more, so the shelf is built that many scores at a time.
+JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)}"
 
 # The hash of whatever is fed in. sha256sum on Linux, shasum on a Mac.
 digest() {
@@ -160,91 +158,25 @@ digest() {
 	fi
 }
 
-# What a score hashes to, which is what its recording is filed under. The
-# soundfont is in the key as well: changing it should change the sound, and a
-# cache that ignored it would serve yesterday's instruments for ever.
-sumof() {
-	{ cat "$1"; printf '%s' "$(basename "$SOUNDFONT")"; } | digest
-}
-
-# ── what was built last time ────────────────────────────────────────────────
-#
-# Engraving a score is most of the work here and it is done three times for
-# each one: to read what it says about itself, to draw the cover, and to write
-# the page. A shelf of fourteen hundred songs is six minutes of that, every
-# build, for music that has not changed since the last one.
-#
-# So the answers are kept. A score that is the same score, engraved by the
-# same gscore, built by the same build.sh, is the same page — and that is the
-# whole of the key. Change any of the three and the key changes and the work
-# is done again, which is what makes keeping the answers safe rather than a
-# way of publishing something stale.
-BUILD_CACHE="${BUILD_CACHE:-$HERE/.build-cache}"
-if [ "${NO_CACHE:-0}" = 1 ]; then
-	BUILD_CACHE=""
-else
-	mkdir -p "$BUILD_CACHE"
-fi
-
-# Which gscore, and which build.sh. Asked once: neither can change while a
-# build is running.
+# Which gscore, and which recipe. Asked once: neither can change while a
+# build is running, and there is no sense in fifteen hundred workers hashing
+# the same forty megabytes.
 #
 # The gscore is the binary itself and not the version it prints. A gscore
 # built from changed code reports the same version as the one before it —
 # "dev" until somebody bumps it — so keying on the version hands back pages
 # drawn by a gscore that no longer exists, which is the one mistake a cache
-# must not make and precisely the thing this one is here to prevent. Hashing
-# forty megabytes costs a fraction of a second, once.
-BUILD_ID=$(digest < "$0")
+# must not make and precisely the thing this one is here to prevent.
 GSCORE_BIN=$(command -v "$GSCORE" 2>/dev/null || printf '%s' "$GSCORE")
 if [ -f "$GSCORE_BIN" ]; then
 	GSCORE_ID=$(digest < "$GSCORE_BIN")
+	# An absolute path, since the workers do not run from here.
+	case $GSCORE_BIN in /*) ;; *) GSCORE_BIN=$(pwd)/$GSCORE_BIN ;; esac
+	GSCORE=$GSCORE_BIN
 else
 	GSCORE_ID=$("$GSCORE" -version 2>/dev/null || echo unknown)
 fi
-
-# record makes the recording for one score, or finds it already made.
-#   record <score file> <where to put the .m4a>
-record() {
-	_src=$1
-	_dst=$2
-	_key=$(sumof "$_src")
-	_kept="$AUDIO_CACHE/$_key.m4a"
-
-	if [ -f "$_kept" ]; then
-		cp "$_kept" "$_dst"
-		echo "    recording: from the cache"
-		return 0
-	fi
-
-	# FLAC first because that is what gscore writes, then encoded for
-	# serving. AAC rather than Opus: every browser plays it, Safari
-	# included, and a recording nobody can hear is not an improvement.
-	# +faststart puts the index at the front, so playing can begin on the
-	# first part of the file instead of waiting for all of it.
-	_flac=$(mktemp "${TMPDIR:-/tmp}/gscore-rec.XXXXXX") || return 1
-	mv "$_flac" "$_flac.flac"
-	_flac="$_flac.flac"
-	echo "    recording (this is the slow part)…"
-	if ! "$GSCORE" -o "$_flac" -soundfont "$SOUNDFONT" "$_src" \
-		</dev/null >/dev/null 2>&1; then
-		echo "    recording failed; the page will synthesise instead" >&2
-		rm -f "$_flac"
-		return 1
-	fi
-	# -nostdin, and stdin closed, because ffmpeg reads it for keystrokes
-	# unless told not to. See the note on the list of scores below: it ate
-	# them.
-	if ! ffmpeg -nostdin -v error -y -i "$_flac" -c:a aac -b:a 128k \
-		-movflags +faststart "$_dst" </dev/null >/dev/null 2>&1; then
-		echo "    encoding failed; the page will synthesise instead" >&2
-		rm -f "$_flac" "$_dst"
-		return 1
-	fi
-	rm -f "$_flac"
-	cp "$_dst" "$_kept"
-	return 0
-}
+RECIPE_ID=$(digest < "$HERE/engrave.sh")
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
@@ -255,250 +187,94 @@ mkdir -p "$OUT"
 "$GSCORE" -o "$OUT/font.otf" >/dev/null
 "$GSCORE" -o "$OUT/player.js" >/dev/null
 
-esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
-
-: > "$OUT/.rows"
-: > "$OUT/.skipped"
-
-# How many came back from the cache rather than being engraved again.
-kept=0
-
-# Everywhere but the build's own output and git's. read -r so that a folder
-# or a piece with a space in its name is one name and not two, which is most
-# of them.
+# ── the scores, largest first ───────────────────────────────────────────────
 #
-# The list goes into a file and the loop reads it on a descriptor of its own,
-# rather than coming down a pipe into the loop's stdin.
+# Everywhere but the build's own output and git's. NUL-separated throughout,
+# so that a folder or a piece with a space in its name is one name and not
+# two, which is most of them.
 #
-# Down a pipe, the scores not yet read are the loop's standard input, and
-# anything inside the loop that reads standard input eats them. ffmpeg does:
-# it watches stdin for keystrokes unless told not to. So every score that was
-# recorded swallowed the line after it, and the build then looked for a score
-# at half a path — "me/runner/work/..." with the front of it gone. No such
-# file, and the report for a file that is not there is that it is empty, so
-# the shelf quietly came out with Beethoven's ninth and Chopin's nocturne
-# missing and said both files were empty. They were 8 MB and 597 KB.
-#
-# ffmpeg is told not to as well, below. This is the half of the fix that does
-# not have to be remembered again the next time something is added here.
+# Largest first because they are engraved several at a time: a symphony that
+# takes twenty minutes wants to start at once, with the songs going through
+# beside it, and not after fourteen hundred of them when nothing else is left
+# to do and three of the four processors sit idle. The size of the file is a
+# fair guess at the work, since a .gscore carries a PDF of itself.
 list="$OUT/.list"
 find "$HERE" -name '*.gscore' -type f \
-	-not -path "$OUT/*" -not -path "$HERE/.git/*" -print |
-	LC_ALL=C sort > "$list"
+	-not -path "$OUT/*" -not -path "$HERE/.git/*" -print0 |
+	xargs -0 -n 1 sh -c 'printf "%s\t%s\n" "$(wc -c < "$1")" "$1"' _ |
+	sort -rn | cut -f2- | tr '\n' '\0' > "$list"
 
-while IFS= read -r file <&3; do
-	rel=${file#"$HERE"/}                   # classical/bach/prelude.gscore
-	dir=$(dirname "$rel")                  # classical/bach
-	[ "$dir" = "." ] && dir=""
-	name=$(basename "$rel" .gscore)        # prelude
-
-	# The folders are kept, so two pieces called "prelude" in different
-	# folders are two pieces and not one overwriting the other.
-	slugdir=$(printf '%s' "$dir" | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9._/-')
-	slugname=$(printf '%s' "$name" | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9._-')
-	slug=${slugdir:+$slugdir/}$slugname
-	# How far back up to the shared font and player from inside it.
-	up=$(printf '%s' "$slug" | tr -cd '/' | sed 's#/#../#g')../
-
-	mkdir -p "$OUT/$slug"
-	echo "  $rel"
-
-	# What the score says about itself. -describe saves the shelf opening
-	# the archive, which is why gscore prints the description and the tags
-	# there — and how many shapes the music comes to, which is the one thing
-	# it has to engrave the score to answer and the reason this step takes a
-	# few seconds on a symphony.
-	#
-	# A score gscore cannot read is reported and stepped over, not a
-	# reason to stop. A shelf of thirty pieces must not be undone by one
-	# file that was still copying when the build began — which is how
-	# this was found: an empty file, dropped in and picked up a moment
-	# too early.
-	# Asked once per score per gscore. What it answers cannot change while
-	# neither of those does, and it is the slow half of this step.
-	info=""
-	said=""
-	if [ -n "$BUILD_CACHE" ] && [ -s "$file" ]; then
-		said="$BUILD_CACHE/$({ cat "$file"; printf '%s' "$GSCORE_ID"; } | digest).said"
-		if [ -f "$said" ]; then
-			info=$(cat "$said")
-		fi
-	fi
-	if [ -n "$info" ]; then
-		:
-	elif ! info=$("$GSCORE" -describe "$file" 2>&1); then
-		why=$(printf '%s' "$info" | sed 's/^gscore: //' | head -1)
-		# A file that is not there and a file with nothing in it are
-		# different problems, and saying "empty" for both hid a real one:
-		# the loop was being handed half a path, and the shelf reported two
-		# perfectly good scores as empty files for an afternoon.
-		if [ ! -e "$file" ]; then
-			why="there is no file at $file"
-		elif [ ! -s "$file" ]; then
-			why="the file is empty"
-		fi
-		echo "    skipped: $why" >&2
-		printf '%s\t%s\n' "$rel" "$why" >> "$OUT/.skipped"
-		rm -rf "$OUT/$slug"
-		continue
-	elif [ -n "$said" ]; then
-		printf '%s\n' "$info" > "$said"
-	fi
-	field() { printf '%s\n' "$info" | sed -n "s/^$1  *//p" | head -1; }
-	title=$(field title); [ -n "$title" ] || title="$name"
-
-	# The score itself, which is also its PDF: one file, two uses.
-	cp "$file" "$OUT/$slug/$name.gscore"
-
-	# Whether the drawing goes in the page or beside it.
-	#
-	# A score the browser can hold goes in, which is one file and nothing to
-	# fetch. A large one cannot: Beethoven's ninth inline is seventy-four
-	# megabytes and nine hundred thousand shapes, and a browser given all of
-	# them spends seconds laying them out and then has nothing left to
-	# animate with — the music played with the page frozen behind it. In
-	# pieces of four systems it is about nine thousand shapes at a time and
-	# the page opens in a second.
-	#
-	# Asked of gscore, not guessed at here.
-	#
-	# Not from the size of the file: a .gscore carries a PDF of itself, so
-	# its size says how many pages it is rather than how many shapes. And not
-	# from staves times bars either, which was the first try here and is
-	# wrong by a factor of seven on the ninth symphony — fifty-three staves,
-	# most of them resting most of the time, and a bar's rest is one shape
-	# where a beamed chord is a dozen. gscore engraves it and counts what it
-	# drew, which is the number a browser will actually be handed.
-	shapes=$(field shapes)
-	big=0
-	[ "${shapes:-0}" -gt "$BIG" ] && big=1
-
-	bands=""
-	if [ "$big" = 1 ]; then
-		bands="4"
-		echo "    $shapes shapes: the drawing goes beside the page, not in it"
-	fi
-
-	# The recording, for the scores that need one.
-	#
-	# Not for all of them. The player in a page is one oscillator a note,
-	# which is what it was written to be and is fine for a song: a flute and a
-	# piano for three minutes comes out as a flute and a piano, near enough.
-	# It is a symphony it cannot do — fifty-three staves of it sound like a
-	# telephone exchange, and that is what the recordings are for.
-	#
-	# And they are not cheap. A song is five and a half seconds to render and
-	# encode and a megabyte and a half of audio. An imported corpus is
-	# fourteen hundred songs, which is two hours of recording and over two
-	# gigabytes to publish — more than GitHub Pages will serve at all, for
-	# music that would have played by itself.
-	#
-	# So two things get a recording. Anything large, because the page's player
-	# cannot do it at any quality. And anything you put on the shelf by hand,
-	# wherever it did not come out of a bulk import: those are the scores
-	# somebody chose, and they are few enough to be worth the minutes. A
-	# corpus of a thousand songs is left to synthesise, which is what keeps
-	# publishing it a matter of minutes rather than an afternoon. See SYNTH.
-	audio=""
-	if [ -n "$SOUNDFONT" ] && { [ "$big" = 1 ] || ! imported "$rel"; }; then
-		if record "$file" "$OUT/$slug/audio.m4a"; then
-			audio="audio.m4a"
-		else
-			rm -f "$OUT/$slug/audio.m4a"
-		fi
-	fi
-
-	# The cover, the page and the shelf's row for this score.
-	#
-	# All three are made by engraving it, which is most of the cost of a
-	# build, so all three are kept together under one key. What they depend on
-	# is the whole of that key: the score itself, the gscore that drew it,
-	# this build.sh, where the score sits on the shelf — the page reaches back
-	# up to the shared font and player, so its depth is in it — and whether it
-	# came out with a recording beside it and a drawing in pieces. Nothing
-	# else can change what was written, so nothing else belongs in the key.
-	pdir=""
-	prow=""
-	if [ -n "$BUILD_CACHE" ] && [ -s "$file" ]; then
-		pkey=$({ cat "$file"
-			printf '%s\0%s\0%s\0%s\0%s' \
-				"$GSCORE_ID" "$BUILD_ID" "$rel" "$audio" "$bands"
-		} | digest)
-		pdir="$BUILD_CACHE/$pkey.page"
-		prow="$BUILD_CACHE/$pkey.row"
-	fi
-
-	if [ -n "$prow" ] && [ -f "$prow" ] && [ -d "$pdir" ]; then
-		cp -R "$pdir/." "$OUT/$slug/"
-		cat "$prow" >> "$OUT/.rows"
-		kept=$((kept + 1))
-		continue
-	fi
-
-	# The first page, as the picture the shelf is read by.
-	"$GSCORE" -o "$OUT/$slug/.cover.pdf" "$file" >/dev/null
-	pdftoppm -r 80 -f 1 -l 1 -png -singlefile "$OUT/$slug/.cover.pdf" "$OUT/$slug/cover"
-	pages=$(pdfinfo "$OUT/$slug/.cover.pdf" 2>/dev/null | sed -n 's/^Pages: *//p')
-	rm -f "$OUT/$slug/.cover.pdf"
-
-	# The playable page, with the font and the player left outside it.
-	#
-	# With a recording the page plays that; without one it synthesises, as
-	# it always did. An empty -audio or -bands is the same as not passing it,
-	# so this is one call however the answers came out.
-	"$GSCORE" -o "$OUT/$slug/play.html" \
-		-font "${up}font.otf" -script "${up}player.js" \
-		-audio "$audio" ${bands:+-bands "$bands"} "$file" >/dev/null
-
-	# The tags and the instruments, each as a JSON list. Both are written by
-	# gscore as one comma-separated line, so both are cut up the same way.
-	aslist() {
-		field "$1" | tr ',' '\n' | sed 's/^ *//; s/ *$//' |
-			grep -v '^$' | sed 's/"/\\"/g; s/.*/"&"/' | paste -sd, -
-	}
-	taglist=$(aslist tags)
-	instlist=$(aslist instruments)
-	row=$(printf '{"slug":"%s","file":"%s","folder":"%s","title":"%s","composer":"%s","description":"%s","pages":%s,"tags":[%s],"instruments":[%s]}' \
-		"$(esc "$slug")" "$(esc "$name.gscore")" "$(esc "$dir")" \
-		"$(esc "$title")" "$(esc "$(field composer)")" \
-		"$(esc "$(field description)")" "${pages:-0}" "$taglist" "$instlist")
-	printf '%s\n' "$row" >> "$OUT/.rows"
-
-	# Kept for the next build. The recording is not in here: it has a cache of
-	# its own, keyed on the soundfont as well, and it is copied in above.
-	if [ -n "$pdir" ]; then
-		rm -rf "$pdir"
-		mkdir -p "$pdir"
-		for made in "$OUT/$slug/cover.png" "$OUT/$slug/play.html" \
-			"$OUT/$slug"/play.*.svg
-		do
-			if [ -f "$made" ]; then
-				cp "$made" "$pdir/"
-			fi
-		done
-		printf '%s\n' "$row" > "$prow"
-	fi
-done 3< "$list"
+# ── one score at a time, several at a time ──────────────────────────────────
+#
+# Each score is engrave.sh's business; what it needs to know travels in the
+# environment. Its output is caught and printed whole once it is done, so
+# that four scores engraving at once do not say their lines over one another.
+#
+# stdin is closed on the way in. The list is on xargs's standard input, and
+# anything in a worker that reads standard input would eat the scores still
+# to come; ffmpeg does, for keystrokes, unless told not to. It is told not
+# to as well, in engrave.sh, but this half of the fix does not have to be
+# remembered the next time something is added there.
+#
+# A score engrave.sh could not finish is not a reason to stop the others, so
+# xargs's own complaint about it is let go; the score is found afterwards by
+# the row it did not write.
+export HERE OUT GSCORE GSCORE_ID RECIPE_ID SOUNDFONT AUDIO_CACHE BUILD_CACHE BIG SYNTH
+xargs -0 -n 1 -P "$JOBS" sh -c '
+	log=$(mktemp "${TMPDIR:-/tmp}/gscore-log.XXXXXX") || exit 1
+	"$HERE/engrave.sh" "$1" </dev/null >"$log" 2>&1 ||
+		echo "    engraving failed (exit $?); see above" >>"$log"
+	cat "$log"
+	rm -f "$log"
+' _ < "$list" || true
 rm -f "$list"
+
+# ── gathering ───────────────────────────────────────────────────────────────
+#
+# Every score left behind a folder with .rel in it, saying where it came
+# from, and one of three things beside: .row, its line on the shelf; .skipped,
+# why gscore could not read it; or neither, because something gave out
+# partway. The last two come off the shelf, and are said.
+kept=0
+: > "$OUT/.skipped"
+find "$OUT" -name .rel | LC_ALL=C sort | while IFS= read -r relf; do
+	d=$(dirname "$relf")
+	rel=$(cat "$relf")
+	if [ -f "$d/.row" ]; then
+		if [ -f "$d/.kept" ]; then echo "$rel" >> "$OUT/.keptlist"; fi
+	elif [ -f "$d/.skipped" ]; then
+		printf '%s\t%s\n' "$rel" "$(cat "$d/.skipped")" >> "$OUT/.skipped"
+		rm -rf "$d"
+	else
+		printf '%s\t%s\n' "$rel" "engraving failed; see the output above" >> "$OUT/.skipped"
+		rm -rf "$d"
+	fi
+done
+if [ -f "$OUT/.keptlist" ]; then
+	kept=$(wc -l < "$OUT/.keptlist" | tr -d " ")
+	rm -f "$OUT/.keptlist"
+fi
 
 # The shelf's own list, sorted the way a shelf is read. The page can sort
 # it again any way it likes.
 {
 	printf '[\n'
-	LC_ALL=C sort "$OUT/.rows" | sed '$ !s/$/,/'
+	find "$OUT" -name .row -exec cat {} + | LC_ALL=C sort | sed '$ !s/$/,/'
 	printf ']\n'
 } > "$OUT/scores.json"
-rm -f "$OUT/.rows"
+
+# What the workers left for this file to read is not for the shelf.
+find "$OUT" \( -name .row -o -name .rel -o -name .kept -o -name .audio \) -type f -delete
 
 cp "$HERE/index.html" "$OUT/index.html"
 n=$(grep -c '"slug"' "$OUT/scores.json" || true)
 skipped=$(wc -l < "$OUT/.skipped" | tr -d ' ')
-echo "built $n score(s) into $OUT"
+echo "built $n score(s) into $OUT, $JOBS at a time"
 if [ "$kept" -gt 0 ]; then
 	echo "$kept of them came back from the cache, unchanged since the last build"
 fi
 if [ "$skipped" -gt 0 ]; then
-	echo "$skipped could not be read:" >&2
+	echo "$skipped could not be built:" >&2
 	sed 's/^/  /; s/\t/: /' "$OUT/.skipped" >&2
 fi
 rm -f "$OUT/.skipped"

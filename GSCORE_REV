@@ -1,0 +1,13 @@
+# The gscore revision the shelf is drawn with, by .github/workflows/pages.yml.
+#
+# A commit of github.com/stricaud/gscore. Pinned rather than taken from HEAD
+# because gscore moves several times a day and every move redraws every
+# score: the engraved pages are cached against the engraver that drew them,
+# and a cache that never sees the same engraver twice is never a cache. From
+# the ninth of November to the fourteenth, nine builds each saved a cache of
+# pages and not one of them read one.
+#
+# Move this on purpose, when gscore has changed something worth redrawing the
+# shelf for, and push; the build does the rest. A line starting with # is a
+# comment; the first line that is not is the revision.
+503f2ff46f2736c4c80d79805c216968171048fc

@@ -38,15 +38,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # gscore is built from source rather than taken from a release, so
-      # the shelf is always drawn by the engraver as it stands now.
+      # gscore is built from source, at the revision GSCORE_REV names.
+      #
+      # Not from HEAD, though it was for a while: gscore moves several times
+      # a day, and the engraved pages are cached against the engraver that
+      # drew them, so a shelf drawn by HEAD was redrawn from nothing on every
+      # push — twenty minutes of engraving for one new song. Bump GSCORE_REV
+      # when gscore has changed something worth redrawing the shelf for.
+      - id: engraver
+        run: echo "sha=$(grep -v '^#' GSCORE_REV | tr -d ' \n')" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: stricaud/gscore
+          ref: ${{ steps.engraver.outputs.sha }}
           path: .gscore-src
-      # Which gscore this is, for the cache key below.
-      - id: engraver
-        run: echo "sha=$(git -C .gscore-src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v5
         with:
           go-version-file: .gscore-src/go.mod
@@ -57,8 +62,11 @@ jobs:
       # only thing asked of gscore here is -describe. gscore's
       # internal/desktop has a !cgo build that leaves the window out, so
       # this is the same binary its own Makefile ships for Linux.
+      #
+      # -trimpath so that the same source gives the same bytes wherever it
+      # is built: build.sh keys its cache on a hash of the binary.
       - name: Build gscore
-        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/gscore" .
+        run: CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/gscore" .
         working-directory: .gscore-src
 
       # pdftoppm turns each score's first page into the picture on the
@@ -87,29 +95,32 @@ jobs:
 
       # The engraved pages, kept between builds.
       #
-      # Every score is engraved three times to publish it — once to read what
-      # it says, once for the cover, once for the page — and a shelf of a
-      # thousand imported songs is minutes of that on every build, for music
-      # that has not changed. build.sh keeps the results under .build-cache
-      # and this carries them from one run to the next.
+      # Every score is engraved to publish it — once to read what it says,
+      # once for the page — and a shelf of a thousand imported songs is
+      # minutes of that on every build, for music that has not changed.
+      # build.sh keeps the results under .build-cache and this carries them
+      # from one run to the next.
       #
-      # The gscore revision is in the key as well as the scores, because a
-      # page drawn by last week's engraver is not the page this week's would
-      # draw. Nothing stale can be served even so: build.sh keys each entry on
-      # a hash of the gscore binary itself, so a cache restored against the
-      # wrong engraver simply misses rather than being believed. The key is
-      # the optimisation; the check inside is the guarantee.
+      # The key is the scores, the recipe that engraves them and the gscore
+      # revision, which is what the pages depend on; anything else is noise
+      # that would make a fresh key and a cold cache. The restore-key brings
+      # back the last cache of pages whatever it was keyed on, and build.sh
+      # decides inside what is still good: each entry is keyed on a hash of
+      # the gscore binary and of engrave.sh, so a cache restored against the
+      # wrong engraver misses rather than being believed. The key is the
+      # optimisation; the check inside is the guarantee.
       - uses: actions/cache@v4
         with:
           path: .build-cache
-          key: pages-${{ steps.engraver.outputs.sha }}-${{ hashFiles('**/*.gscore') }}
+          key: pages-${{ hashFiles('**/*.gscore', 'engrave.sh', 'GSCORE_REV') }}
           restore-keys: |
-            pages-${{ steps.engraver.outputs.sha }}-
+            pages-
 
       # build.sh finds the soundfont installed above for itself, and says in
       # its output whether it is recording or leaving the pages to make
       # their own sound. A score it has a recording for already costs
-      # nothing here; a new symphony is about seven minutes.
+      # nothing here; a new symphony is about seven minutes. Scores are
+      # engraved as many at a time as the runner has processors.
       - name: Build the shelf
         run: ./build.sh "$RUNNER_TEMP/gscore"
 

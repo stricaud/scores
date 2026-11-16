@@ -41,5 +41,17 @@ wherever it is copied to.
 Needs `gscore` and `pdftoppm` (in `poppler-utils`). The result is in
 `site/`, which is not kept in the repository — open `site/index.html`.
 
+`build.sh` is the shelf: it finds the scores and gathers the list. What
+is done to one score — its cover, its page, its recording — is in
+`engrave.sh`, which can be run on a single file to try it out. Scores
+are engraved as many at a time as the machine has processors (`JOBS=1`
+for one), and what has not changed since the last build comes back from
+`.build-cache` and `.audio-cache` instead of being made again.
+
+The published shelf is drawn by the gscore revision in `GSCORE_REV`.
+Change that line and push when gscore has changed something worth
+redrawing every score for; a push that only adds a score reuses the
+rest.
+
 A score gscore cannot read is reported and stepped over, so one bad file
 does not take the shelf down with it.

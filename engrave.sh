@@ -151,6 +151,23 @@ record() {
 
 esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
+# place puts every file in one folder into another, as hard links where the
+# file system allows and as copies where it does not.
+#
+# Links, because the cache and the shelf are the same bytes twice, and on a
+# runner with fourteen gigabytes of disk the second copy of a four-gigabyte
+# shelf was the difference between a build and a dead runner. A link costs
+# nothing, and nothing here writes into a file once it is made: the shelf is
+# cleared and written afresh each build, and the cache only ever gains or
+# loses whole entries.
+#   place <from> <to>
+place() {
+	for _f in "$1"/* "$1"/.[!.]*; do
+		[ -f "$_f" ] || continue
+		ln "$_f" "$2/" 2>/dev/null || cp "$_f" "$2/"
+	done
+}
+
 # ── where it goes ───────────────────────────────────────────────────────────
 
 case $file in /*) ;; *) file=$(pwd)/$file ;; esac
@@ -220,11 +237,22 @@ if [ -n "$BUILD_CACHE" ] && [ -s "$file" ]; then
 	kept="$BUILD_CACHE/$key.page"
 fi
 
+# What the score said about itself last time, kept by score and by gscore;
+# see below. Named here because a page that comes back from the cache wants
+# it kept too: build.sh lets go of whatever a build did not touch.
+said=""
+if [ -n "$BUILD_CACHE" ] && [ -s "$file" ]; then
+	said="$BUILD_CACHE/$({ cat "$file"; printf '%s' "$GSCORE_ID"; } | digest).said"
+fi
+
 # The recording is not kept with the page. It has a cache of its own, keyed
 # on the score and the soundfont and nothing else, so that a new gscore
 # redraws the pages without re-recording three quarters of an hour of
 # orchestra. The page remembers which recording it was made for, in .audio,
 # and that recording has to be there too for the page to come back.
+#
+# An entry that is used is touched, so that build.sh can tell it from one
+# nothing has asked for since some earlier shelf, and let that one go.
 if [ -n "$kept" ] && [ -f "$kept/.row" ]; then
 	back=1
 	if [ -f "$kept/.audio" ] && [ ! -f "$AUDIO_CACHE/$(cat "$kept/.audio").m4a" ]; then
@@ -232,11 +260,15 @@ if [ -n "$kept" ] && [ -f "$kept/.row" ]; then
 		back=0
 	fi
 	if [ "$back" = 1 ]; then
-		cp -R "$kept/." "$out/"
+		place "$kept" "$out"
 		if [ -f "$out/.audio" ]; then
 			cp "$AUDIO_CACHE/$(cat "$out/.audio").m4a" "$out/audio.m4a"
 		fi
 		cp "$file" "$out/$name.gscore"
+		touch "$kept"
+		if [ -n "$said" ] && [ -f "$said" ]; then
+			touch "$said"
+		fi
 		: > "$out/.kept"
 		echo "    from the cache"
 		exit 0
@@ -257,12 +289,9 @@ fi
 # still copying when the build began — which is how this was found: an
 # empty file, dropped in and picked up a moment too early.
 info=""
-said=""
-if [ -n "$BUILD_CACHE" ] && [ -s "$file" ]; then
-	said="$BUILD_CACHE/$({ cat "$file"; printf '%s' "$GSCORE_ID"; } | digest).said"
-	if [ -f "$said" ]; then
-		info=$(cat "$said")
-	fi
+if [ -n "$said" ] && [ -f "$said" ]; then
+	info=$(cat "$said")
+	touch "$said"
 fi
 if [ -n "$info" ]; then
 	:
@@ -401,12 +430,15 @@ printf '{"slug":"%s","file":"%s","folder":"%s","title":"%s","composer":"%s","des
 # ── kept for next time ──────────────────────────────────────────────────────
 #
 # Everything but the score, which is copied from where it lives, and the
-# recording, which has its own cache and is named here instead.
+# recording, which has its own cache and is named here instead. As links to
+# the shelf's files, not copies; see place.
 if [ -n "$kept" ] && [ "$retry" = 0 ]; then
 	rm -rf "$kept"
 	mkdir -p "$kept"
 	for made in "$out/cover.png" "$out/play.html" "$out"/play.*.svg "$out/.row"; do
-		if [ -f "$made" ]; then cp "$made" "$kept/"; fi
+		if [ -f "$made" ]; then
+			ln "$made" "$kept/" 2>/dev/null || cp "$made" "$kept/"
+		fi
 	done
 	if [ -n "$audio" ]; then
 		printf '%s' "$akey" > "$kept/.audio"

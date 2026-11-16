@@ -181,6 +181,11 @@ RECIPE_ID=$(digest < "$HERE/engrave.sh")
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
+# When this build began, for the cache to be weighed against at the end:
+# an entry older than this is one no score of this shelf asked for.
+began="$OUT/.began"
+: > "$began"
+
 # The font and the player once for the whole site rather than inside every
 # page. The font is most of a megabyte and a page is tens of kilobytes, so
 # this is the difference between a shelf that loads and one that does not.
@@ -198,11 +203,16 @@ mkdir -p "$OUT"
 # beside it, and not after fourteen hundred of them when nothing else is left
 # to do and three of the four processors sit idle. The size of the file is a
 # fair guess at the work, since a .gscore carries a PDF of itself.
+#
+# wc is given the files by the hundred rather than one at a time: five
+# thousand of it, one by one, was half a minute before a single score was
+# looked at. It prints a total after each batch, which is told from a score
+# by not ending in .gscore, as every score does.
 list="$OUT/.list"
 find "$HERE" -name '*.gscore' -type f \
 	-not -path "$OUT/*" -not -path "$HERE/.git/*" -print0 |
-	xargs -0 -n 1 sh -c 'printf "%s\t%s\n" "$(wc -c < "$1")" "$1"' _ |
-	sort -rn | cut -f2- | tr '\n' '\0' > "$list"
+	xargs -0 wc -c | grep '\.gscore$' |
+	sort -rn | sed 's/^ *[0-9]* //' | tr '\n' '\0' > "$list"
 
 # ── one score at a time, several at a time ──────────────────────────────────
 #
@@ -219,8 +229,12 @@ find "$HERE" -name '*.gscore' -type f \
 # A score engrave.sh could not finish is not a reason to stop the others, so
 # xargs's own complaint about it is let go; the score is found afterwards by
 # the row it did not write.
+#
+# Under nice, because this fills every processor for as long as it runs, and
+# on a hosted runner the agent that reports back to GitHub has to get a
+# word in now and then or the job is given up as lost.
 export HERE OUT GSCORE GSCORE_ID RECIPE_ID SOUNDFONT AUDIO_CACHE BUILD_CACHE BIG SYNTH
-xargs -0 -n 1 -P "$JOBS" sh -c '
+nice -n 10 xargs -0 -n 1 -P "$JOBS" sh -c '
 	log=$(mktemp "${TMPDIR:-/tmp}/gscore-log.XXXXXX") || exit 1
 	"$HERE/engrave.sh" "$1" </dev/null >"$log" 2>&1 ||
 		echo "    engraving failed (exit $?); see above" >>"$log"
@@ -237,9 +251,12 @@ rm -f "$list"
 # partway. The last two come off the shelf, and are said.
 kept=0
 : > "$OUT/.skipped"
+#
+# Without starting a program per score: five thousand of dirname and cat
+# were twenty seconds, and the shell can do both by itself.
 find "$OUT" -name .rel | LC_ALL=C sort | while IFS= read -r relf; do
-	d=$(dirname "$relf")
-	rel=$(cat "$relf")
+	d=${relf%/.rel}
+	IFS= read -r rel < "$relf" || true
 	if [ -f "$d/.row" ]; then
 		if [ -f "$d/.kept" ]; then echo "$rel" >> "$OUT/.keptlist"; fi
 	elif [ -f "$d/.skipped" ]; then
@@ -265,6 +282,17 @@ fi
 
 # What the workers left for this file to read is not for the shelf.
 find "$OUT" \( -name .row -o -name .rel -o -name .kept -o -name .audio \) -type f -delete
+
+# ── what the cache can let go of ────────────────────────────────────────────
+#
+# Every entry this build made or used was touched after $began, so an entry
+# older than it belongs to a score that is gone, or to a gscore or a recipe
+# that is. Left alone, those stay for ever: a cache of three shelves was
+# eight gigabytes on a laptop and would not have fit on a runner at all.
+if [ -n "$BUILD_CACHE" ]; then
+	find "$BUILD_CACHE" -mindepth 1 -maxdepth 1 ! -newer "$began" -exec rm -rf {} +
+fi
+rm -f "$began"
 
 cp "$HERE/index.html" "$OUT/index.html"
 n=$(grep -c '"slug"' "$OUT/scores.json" || true)

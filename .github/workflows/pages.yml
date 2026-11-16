@@ -121,6 +121,11 @@ jobs:
       # their own sound. A score it has a recording for already costs
       # nothing here; a new symphony is about seven minutes. Scores are
       # engraved as many at a time as the runner has processors.
+      # What the runner has to work with, said once at the top of the log. A
+      # build that was shut down twice for want of it left no other trace.
+      - name: Room on the runner
+        run: df -h / "$RUNNER_TEMP" && free -m && nproc
+
       - name: Build the shelf
         run: ./build.sh "$RUNNER_TEMP/gscore"
 

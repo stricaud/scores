@@ -53,7 +53,7 @@
 #                   set empty to keep nothing.
 #     BIG           how many shapes make a score a large one. Default 50000.
 #     SYNTH         folders holding a bulk import, whose scores are left to
-#                   synthesise unless they are large. Default "OpenScore-Lieder PDMX".
+#                   synthesise, however large. Default "OpenScore-Lieder PDMX".
 
 set -eu
 
@@ -356,14 +356,21 @@ fi
 # publish — more than GitHub Pages will serve at all, for music that would
 # have played by itself.
 #
-# So two things get a recording. Anything large, because the page's player
-# cannot do it at any quality. And anything you put on the shelf by hand,
-# wherever it did not come out of a bulk import: those are the scores
-# somebody chose, and they are few enough to be worth the minutes. See SYNTH.
+# So one thing gets a recording: what you put on the shelf by hand, wherever
+# it did not come out of a bulk import. Those are the scores somebody chose,
+# and they are few enough to be worth the minutes. A corpus is left to
+# synthesise, large scores included. It used to be that anything large was
+# recorded wherever it came from, on the grounds that the page's player
+# cannot do a symphony at any quality — and then an import brought a hundred
+# and thirteen symphonies, operas and ballets at once, Mahler's fifth and
+# Aida among them, which is days of rendering and gigabytes of audio, and the
+# runner that tried it was shut down twice for running out of everything.
+# A symphony from a corpus that deserves a recording can be moved out of the
+# corpus folder, and then it is a score somebody chose. See SYNTH.
 audio=""
 akey=""
 retry=0
-if [ -n "$SOUNDFONT" ] && { [ "$big" = 1 ] || [ "$bulk" = 0 ]; }; then
+if [ -n "$SOUNDFONT" ] && [ "$bulk" = 0 ]; then
 	akey=$(sumof "$file")
 	if record "$file" "$out/audio.m4a" "$akey"; then
 		audio="audio.m4a"

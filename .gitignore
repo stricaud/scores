@@ -2,6 +2,7 @@
 /.audio-cache/
 /.openscore/
 /.musetrainer/
+/.pdmx/
 /.build-cache/
 
 # Which gscore converted an imported folder, written by import-openscore.sh so

@@ -53,7 +53,7 @@
 #                   set empty to keep nothing.
 #     BIG           how many shapes make a score a large one. Default 50000.
 #     SYNTH         folders holding a bulk import, whose scores are left to
-#                   synthesise unless they are large. Default OpenScore-Lieder.
+#                   synthesise unless they are large. Default "OpenScore-Lieder PDMX".
 
 set -eu
 
@@ -67,7 +67,7 @@ SOUNDFONT=${SOUNDFONT-}
 AUDIO_CACHE=${AUDIO_CACHE:-$HERE/.audio-cache}
 BUILD_CACHE=${BUILD_CACHE-$HERE/.build-cache}
 BIG=${BIG:-50000}
-SYNTH=${SYNTH:-OpenScore-Lieder}
+SYNTH=${SYNTH:-OpenScore-Lieder PDMX}
 
 have() { command -v "$1" >/dev/null 2>&1 || [ -x "$1" ]; }
 
@@ -161,8 +161,30 @@ name=$(basename "$rel" .gscore)        # prelude
 
 # The folders are kept, so two pieces called "prelude" in different folders
 # are two pieces and not one overwriting the other.
-slugdir=$(printf '%s' "$dir" | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9._/-')
-slugname=$(printf '%s' "$name" | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9._-')
+#
+# slugof is what one folder or file name becomes in an address: lower case,
+# ASCII, nothing a browser would need to escape. A name with no ASCII in
+# it — 黄河颂, Золушка — would come out as nothing at all, and two of
+# those are one address, which put two scores through one folder at once
+# and left neither whole. Such a name goes by a short hash of itself
+# instead: not readable, but its own.
+slugof() {
+	_s=$(printf '%s' "$1" | tr 'A-Z ' 'a-z-' | tr -cd 'a-z0-9._-')
+	if [ -z "$_s" ]; then
+		_s=$(printf '%s' "$1" | digest | cut -c1-8)
+	fi
+	printf '%s' "$_s"
+}
+slugdir=""
+if [ -n "$dir" ]; then
+	_ifs=$IFS
+	IFS=/
+	for _part in $dir; do
+		slugdir="${slugdir:+$slugdir/}$(slugof "$_part")"
+	done
+	IFS=$_ifs
+fi
+slugname=$(slugof "$name")
 slug=${slugdir:+$slugdir/}$slugname
 # How far back up to the shared font and player from inside it.
 up=$(printf '%s' "$slug" | tr -cd '/' | sed 's#/#../#g')../

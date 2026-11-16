@@ -55,7 +55,7 @@
 #                        Default .build-cache here. NO_CACHE=1 turns it off.
 #     SYNTH              folders holding a bulk import, whose scores are left
 #                        to make their own sound unless they are large.
-#                        Space separated. Default OpenScore-Lieder.
+#                        Space separated. Default "OpenScore-Lieder PDMX".
 #     JOBS               how many scores to engrave at once. Default: as
 #                        many as there are processors.
 #
@@ -133,7 +133,7 @@ BIG="${BIG:-50000}"
 # to make their own sound unless they are large, because there are thousands
 # of them and nobody chose them one at a time. Space separated, matched
 # against the path from here.
-SYNTH="${SYNTH:-OpenScore-Lieder}"
+SYNTH="${SYNTH:-OpenScore-Lieder PDMX}"
 
 AUDIO_CACHE="${AUDIO_CACHE:-$HERE/.audio-cache}"
 [ -n "$SOUNDFONT" ] && mkdir -p "$AUDIO_CACHE"

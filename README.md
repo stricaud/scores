@@ -33,6 +33,23 @@ up to date. In gscore, **Score ▸ Title and composer…** asks for:
 All of it is saved inside the score, so a file carries its own description
 wherever it is copied to.
 
+## Imports
+
+Three scripts bring in corpora other people encoded, each into a folder
+of its own that the shelf leaves to synthesise its own sound:
+
+- `import-openscore.sh` — the OpenScore Lieder corpus, CC0, into
+  `OpenScore-Lieder/`.
+- `import-musetrainer.sh` — the MuseTrainer library, into `MuseTrainer/`.
+- `import-pdmx.sh` — a slice of PDMX, a quarter of a million scores
+  taken off musescore.com, into `PDMX/<genre>/<composer>/`. The slice is
+  what musescore.com itself flags as public domain works, deduplicated
+  and rated, about 3,600 of them; the rest of the set is mostly film and
+  game music its uploaders had no right to give away. The script's
+  header says how to take more or less.
+
+Each is safe to run again: it converts what is new and leaves the rest.
+
 ## Building it yourself
 
     ./build.sh                 # with gscore on your PATH

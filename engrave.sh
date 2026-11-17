@@ -149,7 +149,15 @@ record() {
 	return 0
 }
 
-esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+# esc makes a string safe to put between quotes in JSON. Backslashes and
+# quotes are escaped; a tab becomes a space and any other control character
+# is dropped, because JSON allows none of them raw and a browser handed one
+# throws the whole list away — a single tab at the end of a Chopin étude's
+# title once left the shelf saying it had no scores at all.
+esc() {
+	printf '%s' "$1" | tr '\011' ' ' | tr -d '\000-\010\013-\037' |
+		sed 's/\\/\\\\/g; s/"/\\"/g'
+}
 
 # place puts every file in one folder into another, as hard links where the
 # file system allows and as copies where it does not.
@@ -423,8 +431,9 @@ fi
 # The tags and the instruments, each as a JSON list. Both are written by
 # gscore as one comma-separated line, so both are cut up the same way.
 aslist() {
-	field "$1" | tr ',' '\n' | sed 's/^ *//; s/ *$//' |
-		grep -v '^$' | sed 's/"/\\"/g; s/.*/"&"/' | paste -sd, -
+	field "$1" | tr ',' '\n' | tr '\011' ' ' | tr -d '\000-\010\013-\037' |
+		sed 's/^ *//; s/ *$//' | grep -v '^$' |
+		sed 's/\\/\\\\/g; s/"/\\"/g; s/.*/"&"/' | paste -sd, -
 }
 taglist=$(aslist tags)
 instlist=$(aslist instruments)

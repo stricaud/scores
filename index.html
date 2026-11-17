@@ -61,6 +61,13 @@
     background: var(--panel); color: inherit;
   }
   .tag:hover { background: var(--accent-soft); }
+  .tag.more { color: var(--muted); background: none; border-style: dashed; }
+  /* The cloud, on a row of its own under the search, its words of several
+     sizes lined up through their middles rather than along a baseline. */
+  #tags {
+    flex: 1 1 100%; display: flex; flex-wrap: wrap;
+    gap: 6px 8px; align-items: center;
+  }
   /* The pager. A shelf of a thousand songs does not go on one page: a
      thousand covers is a thousand pictures to fetch and lay out, and nobody
      scrolls past the first fifty anyway. */
@@ -324,6 +331,7 @@ function draw() {
     : total;
   drawPager(pages);
   drawFacets();
+  drawTags();
 }
 
 // The pager: a step either way, the ends always reachable, and a few numbers
@@ -474,29 +482,66 @@ function drawFacets() {
   clearBtn.hidden = !(played.size || levels.size || picked.size);
 }
 
+// The tags, as a cloud of the commonest rather than a list of all of them.
+//
+// A shelf of five thousand scores carries four thousand different tags, most
+// of them used once — "akt 3", "beethoven 87", "buxwv 252" — and a list of
+// every one is a wall nobody reads. So: the commonest, among the scores the
+// other filters leave, sized by how common; the ones you picked always there;
+// and "more" for the next rank down. A tag that is not shown can still be
+// typed into the search, which reads tags too.
+//
+// Difficulty is left out, because it has a facet of its own.
+const TAGS_SHOWN = 24;
+let tagsShown = TAGS_SHOWN;
 function drawTags() {
-  const seen = new Map();
-  for (const s of all) {
-    for (const t of s.tags || []) {
-      const key = t.toLowerCase();
-      if (!seen.has(key)) seen.set(key, t);
+  const count = new Map();
+  const label = new Map();
+  for (const s of all.filter((x) => matches(x))) {
+    for (const key of new Set((s.tags || []).map((t) => t.toLowerCase()))) {
+      if (LEVELS.includes(key)) continue;
+      count.set(key, (count.get(key) || 0) + 1);
+      if (!label.has(key)) label.set(key, s.tags.find((t) => t.toLowerCase() === key));
     }
   }
+  const ranked = [...count].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const top = ranked.slice(0, tagsShown).map(([k]) => k);
+  for (const k of picked) if (!top.includes(k)) top.unshift(k);
+  const most = ranked.length ? Math.log(ranked[0][1] + 1) : 1;
+
   tagBar.innerHTML = "";
-  for (const [key, label] of [...seen].sort((a, b) => a[0].localeCompare(b[0]))) {
+  for (const key of top) {
+    const n = count.get(key) || 0;
     const b = document.createElement("button");
     b.className = "tag";
     b.type = "button";
-    b.textContent = label;
+    b.textContent = label.get(key) || key;
+    b.title = `${n.toLocaleString()} score${n === 1 ? "" : "s"}`;
+    // Between small and not quite twice as big, on a log scale: "piano" is
+    // on a thousand scores and "ragtime" on thirty, and a cloud that showed
+    // that honestly would be one word and some dust.
+    b.style.fontSize = `${(12 + 6 * Math.log(n + 1) / most).toFixed(1)}px`;
+    b.classList.toggle("on", picked.has(key));
     b.onclick = () => {
       if (picked.has(key)) picked.delete(key); else picked.add(key);
-      b.classList.toggle("on", picked.has(key));
       // Narrowing the shelf starts it again from the front: page nine of
       // what you were looking at before is nowhere in what you asked for.
       page = 0;
       draw();
     };
     tagBar.appendChild(b);
+  }
+  const rest = ranked.length - tagsShown;
+  if (rest > 0 || tagsShown > TAGS_SHOWN) {
+    const m = document.createElement("button");
+    m.className = "tag more";
+    m.type = "button";
+    m.textContent = rest > 0 ? `${rest.toLocaleString()} more…` : "fewer";
+    m.onclick = () => {
+      tagsShown = rest > 0 ? tagsShown + 2 * TAGS_SHOWN : TAGS_SHOWN;
+      drawTags();
+    };
+    tagBar.appendChild(m);
   }
 }
 
@@ -510,13 +555,13 @@ clearBtn.onclick = () => {
   levels.clear();
   picked.clear();
   page = 0;
-  drawTags();
+  tagsShown = TAGS_SHOWN;
   draw();
 };
 
 fetch("scores.json")
   .then((r) => r.json())
-  .then((rows) => { all = rows; drawTags(); draw(); })
+  .then((rows) => { all = rows; draw(); })
   .catch(() => {
     countEl.textContent = "scores.json is not here — run build.sh";
   });
